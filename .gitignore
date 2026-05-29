@@ -1,0 +1,24 @@
+# Never commit local Codex state, auth, logs, caches, or copied pet assets.
+.codex/
+.claude/
+auth.json
+.credentials.json
+.env
+.env.*
+*.sqlite
+*.sqlite-*
+*.log
+logs/
+Cache/
+Local Storage/
+Session Storage/
+Cookies
+Cookies-journal
+screenshots/
+private/
+
+# Local editor / OS noise.
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
