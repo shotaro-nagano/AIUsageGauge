@@ -1,5 +1,5 @@
 ﻿param(
-    [int]$RefreshSeconds = 300,
+    [int]$RefreshSeconds = 180,
     [ValidateSet('left','right')]
     [string]$Placement = 'left'
 )
@@ -22,6 +22,29 @@ $ClaudeConfigDir = if ([string]::IsNullOrWhiteSpace($env:CLAUDE_CONFIG_DIR)) {
 $ClaudeCredsPath = Join-Path $ClaudeConfigDir '.credentials.json'
 $ClaudeApiUri = 'https://api.anthropic.com/v1/messages'
 $script:ClaudeRefreshAttemptedAt = [DateTimeOffset]::MinValue  # 最後に refresh を試みた時刻
+
+# --- Option B: refresh 状態を永続化（再起動しても連打しないための backoff）---
+$RefreshStateDir = Join-Path $env:LOCALAPPDATA 'AIUsageGauge'
+$RefreshStatePath = Join-Path $RefreshStateDir 'claude-refresh-state.json'
+
+function Get-RefreshState {
+    try {
+        if (Test-Path -LiteralPath $RefreshStatePath) {
+            return Get-Content -LiteralPath $RefreshStatePath -Raw | ConvertFrom-Json
+        }
+    } catch {}
+    return [pscustomobject]@{ backoffUntil = $null; lastSuccess = $null }
+}
+
+function Set-RefreshState($State) {
+    try {
+        if (!(Test-Path -LiteralPath $RefreshStateDir)) {
+            New-Item -ItemType Directory -Force -Path $RefreshStateDir | Out-Null
+        }
+        $State | ConvertTo-Json | Set-Content -LiteralPath $RefreshStatePath -Encoding UTF8
+    } catch {}
+}
+
 $script:ManualOffsetX = 0
 $script:ManualOffsetY = 0
 $script:LastBasePosition = $null
@@ -127,20 +150,39 @@ function Get-ClaudeUsage {
         throw "Claude access token was not found in .credentials.json"
     }
 
-    # トークンが期限切れなら自動リフレッシュ
-    # refresh は1時間に1回だけ試みる（連打によるレートリミットを防ぐ）
+    # --- Option B: 先回り refresh + ファイル再読込 + 429 バックオフ ---
+    $now = [DateTimeOffset]::UtcNow
     $expiresAt = [DateTimeOffset]::FromUnixTimeMilliseconds($creds.claudeAiOauth.expiresAt)
-    if ([DateTimeOffset]::UtcNow -gt $expiresAt) {
-        $minutesSinceLastAttempt = ([DateTimeOffset]::UtcNow - $script:ClaudeRefreshAttemptedAt).TotalMinutes
-        if ($minutesSinceLastAttempt -ge 60) {
-            $script:ClaudeRefreshAttemptedAt = [DateTimeOffset]::UtcNow
+    # 失効30分前から refresh 対象にする（できるだけ失効させない）
+    $needRefresh = $now -gt $expiresAt.AddMinutes(-30)
+
+    if ($needRefresh) {
+        # 他クライアント(Claude Code等)が既に更新しているかもしれないので読み直す
+        try {
+            $creds = Get-Content -LiteralPath $ClaudeCredsPath -Raw | ConvertFrom-Json
+            $token = $creds.claudeAiOauth.accessToken
+            $expiresAt = [DateTimeOffset]::FromUnixTimeMilliseconds($creds.claudeAiOauth.expiresAt)
+            $needRefresh = $now -gt $expiresAt.AddMinutes(-30)
+        } catch {}
+    }
+
+    if ($needRefresh) {
+        $state = Get-RefreshState
+        $backoffUntil = if ($state.backoffUntil) { [DateTimeOffset]::Parse($state.backoffUntil) } else { [DateTimeOffset]::MinValue }
+        if ($now -lt $backoffUntil) {
+            # バックオフ中は refresh を叩かない。完全失効なら使えない
+            if ($now -gt $expiresAt) { throw "token_expired" }
+        } else {
             try {
                 $token = Invoke-ClaudeTokenRefresh $creds
+                Set-RefreshState ([pscustomobject]@{ backoffUntil = $null; lastSuccess = $now.ToString('o') })
             } catch {
-                throw "token_expired"
+                $is429 = ($_.Exception.Message -match '429|Too Many|rate')
+                $backoff = if ($is429) { $now.AddMinutes(60) } else { $now.AddMinutes(15) }
+                Set-RefreshState ([pscustomobject]@{ backoffUntil = $backoff.ToString('o'); lastSuccess = $state.lastSuccess })
+                if ($now -gt $expiresAt) { throw "token_expired" }
+                # まだ少し有効なら古いトークンのまま続行
             }
-        } else {
-            throw "token_expired"
         }
     }
 
