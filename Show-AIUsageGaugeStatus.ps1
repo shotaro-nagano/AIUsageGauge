@@ -122,6 +122,44 @@ function Get-RecentEvents {
     return $events
 }
 
+function Get-LastHealthEventSummary {
+    if (!(Test-Path -LiteralPath $EventLogPath)) {
+        return [pscustomobject]@{ Found = $false; Event = $null; Timestamp = $null; Summary = 'health: no events' }
+    }
+
+    $eventNames = @(
+        'watchdog_gauge_start_attempted',
+        'watchdog_refresh_task_repaired',
+        'watchdog_refresh_task_repair_failed',
+        'refresh_task_repaired',
+        'refresh_task_repair_failed',
+        'health_watchdog_failed',
+        'health_watchdog_invoked',
+        'notification_shown',
+        'notification_failed'
+    )
+
+    try {
+        $lines = @(Get-Content -LiteralPath $EventLogPath -Tail 120 -ErrorAction SilentlyContinue)
+        [array]::Reverse($lines)
+        foreach ($line in $lines) {
+            try {
+                $event = $line | ConvertFrom-Json
+                if ($eventNames -contains [string]$event.event) {
+                    return [pscustomobject]@{
+                        Found = $true
+                        Event = [string]$event.event
+                        Timestamp = [string]$event.timestamp
+                        Summary = ('health: {0} at {1}' -f $event.event, $event.timestamp)
+                    }
+                }
+            } catch {}
+        }
+    } catch {}
+
+    [pscustomobject]@{ Found = $false; Event = $null; Timestamp = $null; Summary = 'health: no recent repair events' }
+}
+
 function Get-AIUsageGaugeStatus {
     [pscustomobject]@{
         Timestamp = [DateTimeOffset]::Now.ToString('o')
@@ -133,6 +171,7 @@ function Get-AIUsageGaugeStatus {
             HeartbeatTask = 'ClaudeOAuthRefresh'
             Mode = 'piggyback'
         }
+        LastHealthEvent = Get-LastHealthEventSummary
         RecentEvents = @(Get-RecentEvents -Count $RecentEventCount)
     }
 }
@@ -148,6 +187,7 @@ Write-Host ('  Gauge running: {0} (count={1})' -f $status.GaugeProcess.Running, 
 Write-Host ('  Claude credentials: exists={0}, expired={1}, remainingMinutes={2}, expiresAt={3}' -f $status.ClaudeCredentials.Exists, $status.ClaudeCredentials.Expired, $status.ClaudeCredentials.RemainingMinutes, $status.ClaudeCredentials.ExpiresAtLocal)
 Write-Host ('  Claude refresh task: exists={0}, lastResult={1}, nextRun={2}' -f $status.ClaudeOAuthRefreshTask.Exists, $status.ClaudeOAuthRefreshTask.LastTaskResult, $status.ClaudeOAuthRefreshTask.NextRunTime)
 Write-Host ('  Watchdog heartbeat: mode={0}, task={1}, scriptExists={2}' -f $status.HealthWatchdog.Mode, $status.HealthWatchdog.HeartbeatTask, $status.HealthWatchdog.ScriptExists)
+Write-Host ('  Last health event: {0}' -f $status.LastHealthEvent.Summary)
 Write-Host ('  Recent events: {0}' -f @($status.RecentEvents).Count)
 foreach ($event in $status.RecentEvents) {
     $eventText = $event | ConvertTo-Json -Compress -Depth 4

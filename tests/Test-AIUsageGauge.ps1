@@ -20,6 +20,8 @@ $hiddenRefreshLauncher = Join-Path $RepoRoot 'Invoke-ClaudeOAuthRefresh-hidden.v
 $taskInstaller = Join-Path $RepoRoot 'Install-ClaudeOAuthRefreshTask.ps1'
 $statusScript = Join-Path $RepoRoot 'Show-AIUsageGaugeStatus.ps1'
 $watchdogScript = Join-Path $RepoRoot 'Watch-AIUsageGaugeHealth.ps1'
+$appInstallerScript = Join-Path $RepoRoot 'Install-AIUsageGauge.ps1'
+$settingsFile = Join-Path $RepoRoot 'settings.json'
 
 Assert-True (Test-Path -LiteralPath $startScript) 'Start-AIUsageGauge.ps1 is missing'
 Assert-True (Test-Path -LiteralPath $helperScript) 'Invoke-ClaudeOAuthRefresh.ps1 is missing'
@@ -27,6 +29,8 @@ Assert-True (Test-Path -LiteralPath $hiddenRefreshLauncher) 'Invoke-ClaudeOAuthR
 Assert-True (Test-Path -LiteralPath $taskInstaller) 'Install-ClaudeOAuthRefreshTask.ps1 is missing'
 Assert-True (Test-Path -LiteralPath $statusScript) 'Show-AIUsageGaugeStatus.ps1 is missing'
 Assert-True (Test-Path -LiteralPath $watchdogScript) 'Watch-AIUsageGaugeHealth.ps1 is missing'
+Assert-True (Test-Path -LiteralPath $appInstallerScript) 'Install-AIUsageGauge.ps1 is missing'
+Assert-True (Test-Path -LiteralPath $settingsFile) 'settings.json is missing'
 
 $start = Get-Content -Raw -LiteralPath $startScript
 $helper = Get-Content -Raw -LiteralPath $helperScript
@@ -34,6 +38,8 @@ $hiddenLauncher = Get-Content -Raw -LiteralPath $hiddenRefreshLauncher
 $installer = Get-Content -Raw -LiteralPath $taskInstaller
 $status = Get-Content -Raw -LiteralPath $statusScript
 $watchdog = Get-Content -Raw -LiteralPath $watchdogScript
+$appInstaller = Get-Content -Raw -LiteralPath $appInstallerScript
+$settings = Get-Content -Raw -LiteralPath $settingsFile
 
 Assert-True ($start -match 'Global\\AIUsageGauge') 'Start script must create a named mutex'
 Assert-True ($start -match '再ログイン要') 'Expired Claude auth must show a relogin-required label'
@@ -45,6 +51,15 @@ Assert-True ($start -match 'Ensure-ClaudeRefreshTask') 'Gauge startup must self-
 Assert-True ($start -match 'Write-AIUsageGaugeEvent') 'Gauge must write token-free diagnostic events'
 Assert-True ($start -match 'Limit-AIUsageGaugeEventLog') 'Gauge must rotate diagnostic logs'
 Assert-True ($start -match 'AIUG_TOKEN_EXPIRED') 'Gauge must use stable coded errors for expired Claude auth'
+Assert-True ($start -match 'Get-AIUsageGaugeSettings') 'Gauge must load external settings'
+Assert-True ($start -match 'settings\.json') 'Gauge settings must live in settings.json'
+Assert-True ($start -match 'Save-GaugeUiState') 'Gauge must persist drag position state'
+Assert-True ($start -match 'Load-GaugeUiState') 'Gauge must restore persisted drag position state'
+Assert-True ($start -match 'Show-AIUsageGaugeNotification') 'Gauge must support Windows notifications'
+Assert-True ($start -match 'NotifyIcon') 'Gauge notifications must use a Windows notification mechanism'
+Assert-True ($start -match 'Test-NotificationAllowed') 'Gauge must dedupe low-remaining notifications'
+Assert-True ($start -match 'stale') 'Gauge must visibly mark stale usage values'
+Assert-True ($start -match 'Get-LastHealthEventSummary') 'Gauge UI must expose recent watchdog/repair summary'
 
 Assert-True ($helper -match 'claude-code') 'Helper must discover Claude Code installs dynamically'
 Assert-True ($helper -match '--no-session-persistence') 'Helper must avoid persisting probe conversations'
@@ -68,6 +83,8 @@ Assert-True ($status -notmatch 'accessToken|refreshToken|Authorization') 'Status
 Assert-True ($status -match 'expiresAt') 'Status script must report Claude credential expiry metadata'
 Assert-True ($status -match 'LastTaskResult') 'Status script must report scheduled task result codes'
 Assert-True ($status -match 'RecentEvents') 'Status script must include recent token-free diagnostic events'
+Assert-True ($status -match 'Get-LastHealthEventSummary') 'Status script must summarize the latest watchdog/repair event'
+Assert-True ($status -match 'LastHealthEvent') 'Status JSON must include latest health event'
 
 Assert-True ($watchdog -match 'Start-AIUsageGauge-hidden\.vbs') 'Watchdog must restart the gauge through the hidden launcher'
 Assert-True ($watchdog -match 'Install-ClaudeOAuthRefreshTask\.ps1') 'Watchdog must repair the Claude refresh task'
@@ -77,5 +94,17 @@ Assert-True ($watchdog -match 'Start-AIUsageGauge\.ps1') 'Watchdog process match
 Assert-True ($watchdog -notmatch 'Stop-Process') 'Watchdog must not kill processes automatically'
 Assert-True ($watchdog -match 'Write-WatchdogEvent') 'Watchdog must write token-free diagnostic events'
 Assert-True ($watchdog -match 'Limit-WatchdogEventLog') 'Watchdog must rotate diagnostic logs'
+
+Assert-True ($appInstaller -match 'CreateShortcut') 'Installer must create Windows shortcuts'
+Assert-True ($appInstaller -match 'Startup') 'Installer must register startup shortcut'
+Assert-True ($appInstaller -match 'Compress-Archive') 'Installer must build a release ZIP'
+Assert-True ($appInstaller -match 'Install-ClaudeOAuthRefreshTask\.ps1') 'Installer must install/repair the Claude refresh task'
+Assert-True ($appInstaller -notmatch 'accessToken|refreshToken|Authorization') 'Installer must not read or print token values'
+
+Assert-True ($settings -match '"RefreshSeconds"\s*:\s*180') 'Default settings must include RefreshSeconds'
+Assert-True ($settings -match '"NotificationThresholdPercent"\s*:\s*10') 'Default settings must include notification threshold'
+Assert-True ($settings -match '"StaleAfterMinutes"') 'Default settings must include stale threshold'
+Assert-True ($settings -match '"PersistWindowPosition"\s*:\s*true') 'Default settings must enable position persistence'
+Assert-True ($settings -match '"EnableNotifications"\s*:\s*true') 'Default settings must enable notifications'
 
 Write-Host 'AI Usage Gauge tests passed'

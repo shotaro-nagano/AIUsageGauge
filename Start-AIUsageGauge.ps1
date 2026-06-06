@@ -11,6 +11,48 @@ $ScriptDir = if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) {
 } else {
     $PSScriptRoot
 }
+$SettingsPath = Join-Path $ScriptDir 'settings.json'
+
+function New-DefaultAIUsageGaugeSettings {
+    [pscustomobject]@{
+        RefreshSeconds = 180
+        Placement = 'left'
+        EnableCodex = $true
+        EnableClaude = $true
+        EnableNotifications = $true
+        NotificationThresholdPercent = 10
+        NotificationCooldownMinutes = 60
+        StaleAfterMinutes = 5
+        PersistWindowPosition = $true
+        PackageName = 'AI-Usage-Gauge'
+    }
+}
+
+function Get-AIUsageGaugeSettings {
+    $settings = New-DefaultAIUsageGaugeSettings
+    try {
+        if (Test-Path -LiteralPath $SettingsPath) {
+            $loaded = Get-Content -LiteralPath $SettingsPath -Raw | ConvertFrom-Json
+            foreach ($property in $loaded.PSObject.Properties) {
+                if ($settings.PSObject.Properties.Name -contains $property.Name) {
+                    $settings.$($property.Name) = $property.Value
+                }
+            }
+        }
+    } catch {}
+    return $settings
+}
+
+$Settings = Get-AIUsageGaugeSettings
+if (-not $PSBoundParameters.ContainsKey('RefreshSeconds')) {
+    $RefreshSeconds = [int]$Settings.RefreshSeconds
+}
+if (-not $PSBoundParameters.ContainsKey('Placement')) {
+    $Placement = [string]$Settings.Placement
+}
+if ($Placement -notin @('left', 'right')) {
+    $Placement = 'left'
+}
 
 $createdNew = $false
 $script:SingleInstanceMutex = [System.Threading.Mutex]::new($true, 'Global\AIUsageGauge', [ref]$createdNew)
@@ -22,6 +64,8 @@ if (-not $createdNew) {
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
 
 $CodexHome = Join-Path $env:USERPROFILE '.codex'
 $AuthPath = Join-Path $CodexHome 'auth.json'
@@ -44,7 +88,11 @@ $script:ClaudeNeedsRelogin = $false
 $RefreshStateDir = Join-Path $env:LOCALAPPDATA 'AIUsageGauge'
 $RefreshStatePath = Join-Path $RefreshStateDir 'claude-refresh-state.json'
 $EventLogPath = Join-Path $RefreshStateDir 'events.log'
+$UiStatePath = Join-Path $RefreshStateDir 'ui-state.json'
 $MaxEventLogBytes = 262144
+$script:NotificationState = @{}
+$script:LastCodexUsage = $null
+$script:LastClaudeUsage = $null
 
 function Limit-AIUsageGaugeEventLog {
     try {
@@ -108,6 +156,138 @@ function Set-RefreshState($State) {
     } catch {}
 }
 
+function Load-GaugeUiState {
+    try {
+        if (([bool]$Settings.PersistWindowPosition) -and (Test-Path -LiteralPath $UiStatePath)) {
+            return Get-Content -LiteralPath $UiStatePath -Raw | ConvertFrom-Json
+        }
+    } catch {}
+    return [pscustomobject]@{ manualOffsetX = 0; manualOffsetY = 0 }
+}
+
+function Save-GaugeUiState {
+    param(
+        [double]$ManualOffsetX,
+        [double]$ManualOffsetY
+    )
+
+    try {
+        if (-not [bool]$Settings.PersistWindowPosition) {
+            return
+        }
+        if (!(Test-Path -LiteralPath $RefreshStateDir)) {
+            New-Item -ItemType Directory -Force -Path $RefreshStateDir | Out-Null
+        }
+        [pscustomobject]@{
+            manualOffsetX = $ManualOffsetX
+            manualOffsetY = $ManualOffsetY
+            savedAt = [DateTimeOffset]::UtcNow.ToString('o')
+        } | ConvertTo-Json | Set-Content -LiteralPath $UiStatePath -Encoding UTF8
+    } catch {}
+}
+
+function Format-StaleAge {
+    param([datetime]$UpdatedAt)
+
+    $age = (Get-Date) - $UpdatedAt
+    if ($age.TotalHours -ge 1) {
+        return ('stale {0}h {1}m' -f [int][Math]::Floor($age.TotalHours), $age.Minutes)
+    }
+    return ('stale {0}m' -f [Math]::Max(1, [int][Math]::Ceiling($age.TotalMinutes)))
+}
+
+function Test-NotificationAllowed {
+    param([string]$Key)
+
+    $cooldown = [TimeSpan]::FromMinutes([Math]::Max(1, [int]$Settings.NotificationCooldownMinutes))
+    $now = [DateTimeOffset]::UtcNow
+    if ($script:NotificationState.ContainsKey($Key)) {
+        if (($now - $script:NotificationState[$Key]) -lt $cooldown) {
+            return $false
+        }
+    }
+    $script:NotificationState[$Key] = $now
+    return $true
+}
+
+function Show-AIUsageGaugeNotification {
+    param(
+        [string]$Key,
+        [string]$Title,
+        [string]$Message,
+        [string]$Icon = 'Warning'
+    )
+
+    try {
+        if (-not [bool]$Settings.EnableNotifications) { return }
+        if (-not (Test-NotificationAllowed -Key $Key)) { return }
+
+        $notifyIcon = New-Object System.Windows.Forms.NotifyIcon
+        $notifyIcon.Icon = if ($Icon -eq 'Error') { [System.Drawing.SystemIcons]::Error } else { [System.Drawing.SystemIcons]::Warning }
+        $notifyIcon.BalloonTipTitle = $Title
+        $notifyIcon.BalloonTipText = $Message
+        $notifyIcon.Visible = $true
+        $notifyIcon.ShowBalloonTip(5000)
+
+        $cleanupTimer = New-Object System.Windows.Threading.DispatcherTimer
+        $cleanupTimer.Interval = [TimeSpan]::FromSeconds(8)
+        $cleanupTimer.Add_Tick({
+            try {
+                $cleanupTimer.Stop()
+                $notifyIcon.Visible = $false
+                $notifyIcon.Dispose()
+            } catch {}
+        })
+        $cleanupTimer.Start()
+
+        Write-AIUsageGaugeEvent 'notification_shown' @{ key = $Key; title = $Title }
+    } catch {
+        Write-AIUsageGaugeEvent 'notification_failed' @{ key = $Key; error = $_.Exception.Message }
+    }
+}
+
+function Notify-IfLowRemaining {
+    param(
+        [string]$Service,
+        [string]$Window,
+        [int]$RemainingPercent
+    )
+
+    $threshold = [int]$Settings.NotificationThresholdPercent
+    if ($RemainingPercent -le $threshold) {
+        Show-AIUsageGaugeNotification -Key "$Service-$Window-low" -Title 'AI Usage Gauge' -Message ("{0} {1} remaining is {2}%" -f $Service, $Window, $RemainingPercent)
+    }
+}
+
+function Get-LastHealthEventSummary {
+    try {
+        if (!(Test-Path -LiteralPath $EventLogPath)) {
+            return 'health: no events'
+        }
+
+        $eventNames = @(
+            'watchdog_gauge_start_attempted',
+            'watchdog_refresh_task_repaired',
+            'watchdog_refresh_task_repair_failed',
+            'refresh_task_repaired',
+            'refresh_task_repair_failed',
+            'health_watchdog_failed',
+            'health_watchdog_invoked'
+        )
+        $lines = @(Get-Content -LiteralPath $EventLogPath -Tail 80 -ErrorAction SilentlyContinue)
+        [array]::Reverse($lines)
+        foreach ($line in $lines) {
+            try {
+                $event = $line | ConvertFrom-Json
+                if ($eventNames -contains [string]$event.event) {
+                    return ('health: {0} at {1}' -f $event.event, $event.timestamp)
+                }
+            } catch {}
+        }
+    } catch {}
+    return 'health: no recent repair events'
+}
+
 function Test-ClaudeRefreshTaskCurrent {
     try {
         $task = Get-ScheduledTask -TaskPath '\AIUsageGauge\' -TaskName 'ClaudeOAuthRefresh' -ErrorAction Stop
@@ -142,8 +322,9 @@ function Ensure-ClaudeRefreshTask {
     }
 }
 
-$script:ManualOffsetX = 0
-$script:ManualOffsetY = 0
+$savedUiState = Load-GaugeUiState
+$script:ManualOffsetX = [double]($savedUiState.manualOffsetX ?? 0)
+$script:ManualOffsetY = [double]($savedUiState.manualOffsetY ?? 0)
 $script:LastBasePosition = $null
 
 function Clamp-Percent([int]$Value) {
@@ -538,6 +719,7 @@ $window.Add_MouseLeftButtonDown({
         $base = Get-PetGaugePosition $window.Width $window.Height
         $script:ManualOffsetX = $window.Left - $base.Left
         $script:ManualOffsetY = $window.Top - $base.Top
+        Save-GaugeUiState -ManualOffsetX $script:ManualOffsetX -ManualOffsetY $script:ManualOffsetY
     } catch {}
 })
 $window.Add_MouseRightButtonUp({
@@ -551,33 +733,58 @@ function Update-Position {
 }
 
 function Update-Usage {
+    $outer.ToolTip = Get-LastHealthEventSummary
+
     # Codex
     try {
-        $usage = Get-CodexUsage
-        Set-Row $primaryRow $usage.PrimaryRemaining
-        Set-Row $weeklyRow $usage.WeeklyRemaining
-        $footer.Text = ('reset {0} / {1}' -f (Format-Duration $usage.PrimaryReset), (Format-Duration $usage.WeeklyReset))
-        if ($usage.LimitReached) {
-            $title.Text = 'Codex rate - capped'
-            $outer.BorderBrush = '#ef4444'
-        } else {
+        if (-not [bool]$Settings.EnableCodex) {
             $title.Text = 'Codex rate'
-            $outer.BorderBrush = '#334155'
+            $footer.Text = 'off'
+        } else {
+            $usage = Get-CodexUsage
+            $script:LastCodexUsage = $usage
+            Set-Row $primaryRow $usage.PrimaryRemaining
+            Set-Row $weeklyRow $usage.WeeklyRemaining
+            Notify-IfLowRemaining -Service 'Codex' -Window '5h' -RemainingPercent $usage.PrimaryRemaining
+            Notify-IfLowRemaining -Service 'Codex' -Window 'long' -RemainingPercent $usage.WeeklyRemaining
+            $footer.Text = ('reset {0} / {1}' -f (Format-Duration $usage.PrimaryReset), (Format-Duration $usage.WeeklyReset))
+            $footer.ToolTip = Get-LastHealthEventSummary
+            if ($usage.LimitReached) {
+                $title.Text = 'Codex rate - capped'
+                $outer.BorderBrush = '#ef4444'
+            } else {
+                $title.Text = 'Codex rate'
+                $outer.BorderBrush = '#334155'
+            }
         }
     } catch {
         $title.Text = 'Codex rate'
-        $footer.Text = 'unavailable'
+        if ($null -ne $script:LastCodexUsage) {
+            $footer.Text = Format-StaleAge $script:LastCodexUsage.UpdatedAt
+        } else {
+            $footer.Text = 'unavailable'
+        }
         $outer.BorderBrush = '#ef4444'
     }
 
     # Claude
     try {
-        $cl = Get-ClaudeUsage
-        Set-Row $claude5hRow $cl.FiveHourRemaining
-        Set-Row $claude7dRow $cl.SevenDayRemaining
-        $claudeFooter.Text = ('reset {0} / {1}' -f (Format-Duration $cl.FiveHourReset), (Format-Duration $cl.SevenDayReset))
-        $claudeTitle.Text = 'Claude rate'
-        $script:ClaudeNeedsRelogin = $false
+        if (-not [bool]$Settings.EnableClaude) {
+            $claudeTitle.Text = 'Claude rate'
+            $claudeFooter.Text = 'off'
+            $script:ClaudeNeedsRelogin = $false
+        } else {
+            $cl = Get-ClaudeUsage
+            $script:LastClaudeUsage = $cl
+            Set-Row $claude5hRow $cl.FiveHourRemaining
+            Set-Row $claude7dRow $cl.SevenDayRemaining
+            Notify-IfLowRemaining -Service 'Claude' -Window '5h' -RemainingPercent $cl.FiveHourRemaining
+            Notify-IfLowRemaining -Service 'Claude' -Window '7d' -RemainingPercent $cl.SevenDayRemaining
+            $claudeFooter.Text = ('reset {0} / {1}' -f (Format-Duration $cl.FiveHourReset), (Format-Duration $cl.SevenDayReset))
+            $claudeFooter.ToolTip = Get-LastHealthEventSummary
+            $claudeTitle.Text = 'Claude rate'
+            $script:ClaudeNeedsRelogin = $false
+        }
     } catch {
         $claudeTitle.Text = 'Claude rate'
         $errMsg = $_.Exception.Message
@@ -588,11 +795,16 @@ function Update-Usage {
             $claude7dRow.Fill.Fill = '#475569'
             $claudeFooter.Text = '🔑 再ログイン要'
             $script:ClaudeNeedsRelogin = $true
+            Show-AIUsageGaugeNotification -Key 'Claude-auth-expired' -Title 'AI Usage Gauge' -Message 'Claude needs relogin.' -Icon 'Error'
         } elseif ($errMsg -match '429|rate.limit|Rate') {
             $claudeFooter.Text = 'refresh limited - retrying...'
             $script:ClaudeNeedsRelogin = $false
         } else {
-            $claudeFooter.Text = 'unavailable'
+            if ($null -ne $script:LastClaudeUsage) {
+                $claudeFooter.Text = Format-StaleAge $script:LastClaudeUsage.UpdatedAt
+            } else {
+                $claudeFooter.Text = 'unavailable'
+            }
             $script:ClaudeNeedsRelogin = $false
         }
     }

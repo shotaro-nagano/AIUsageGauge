@@ -9,6 +9,7 @@
 > - `Get-FillBrush` の色ロジックを残量パーセントの 5 段階信号色に変更（10% 以下: 赤 / 25% 以下: 橙 / 50% 以下: 黄 / 75% 以下: 黄緑 / 76% 以上: 緑）。短期・長期共通の判定。
 > - Claude OAuth トークンの自動更新を堅牢化（標準 Claude CLI に refresh を委譲 / hidden scheduled task でローカル期限を確認 / ログオン・スリープ復帰で自己修復 / 429 バックオフ + 状態の永続化）。再ログインの手間を最小化。
 > - Watchdog と診断コマンドを追加（既存の hidden refresh task から Gauge の生存確認 / Claude refresh task の修復 / トークン非表示の状態確認）。
+> - 低残量/認証異常通知、stale 表示、ドラッグ位置の永続化、外部 `settings.json`、インストール/ZIP作成スクリプトを追加。
 
 ---
 
@@ -30,7 +31,9 @@ Pets が非表示でもゲージ自体は機能します。
 - CodexPets の近くに自動配置
 - CodexPets の移動に追従
 - CodexPets が非表示でも単体ゲージとして動作
-- ドラッグで位置調整
+- ドラッグで位置調整（再起動後も位置を復元）
+- API取得失敗時に古い値を `stale` として明示
+- 低残量やClaude再ログイン要否をWindows通知
 - ターミナルなしで起動できる VBS ランチャー付き
 
 ## 動作環境
@@ -79,6 +82,31 @@ pwsh -STA -ExecutionPolicy Bypass -File .\Start-AIUsageGauge.ps1 -Placement righ
 
 `Start-AIUsageGauge-hidden.vbs` だけを配布・移動しても動きません。
 必ず `Start-AIUsageGauge.ps1` と同じフォルダに置いてください。
+
+インストール、デスクトップ/スタートアップショートカット作成、Claude refresh task 修復、release ZIP 作成をまとめて行う場合:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\Install-AIUsageGauge.ps1
+```
+
+## 設定
+
+`settings.json` で更新間隔、配置、通知、stale 判定、位置保存を変更できます。スクリプトを直接編集する必要はありません。
+
+```json
+{
+  "RefreshSeconds": 180,
+  "Placement": "left",
+  "EnableCodex": true,
+  "EnableClaude": true,
+  "EnableNotifications": true,
+  "NotificationThresholdPercent": 10,
+  "NotificationCooldownMinutes": 60,
+  "StaleAfterMinutes": 5,
+  "PersistWindowPosition": true,
+  "PackageName": "AI-Usage-Gauge"
+}
+```
 
 ## Claude OAuth 自動更新
 

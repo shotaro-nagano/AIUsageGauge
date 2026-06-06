@@ -1,0 +1,12 @@
+{
+  "RefreshSeconds": 180,
+  "Placement": "left",
+  "EnableCodex": true,
+  "EnableClaude": true,
+  "EnableNotifications": true,
+  "NotificationThresholdPercent": 10,
+  "NotificationCooldownMinutes": 60,
+  "StaleAfterMinutes": 5,
+  "PersistWindowPosition": true,
+  "PackageName": "AI-Usage-Gauge"
+}
