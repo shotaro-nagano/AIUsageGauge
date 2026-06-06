@@ -18,16 +18,22 @@ $startScript = Join-Path $RepoRoot 'Start-AIUsageGauge.ps1'
 $helperScript = Join-Path $RepoRoot 'Invoke-ClaudeOAuthRefresh.ps1'
 $hiddenRefreshLauncher = Join-Path $RepoRoot 'Invoke-ClaudeOAuthRefresh-hidden.vbs'
 $taskInstaller = Join-Path $RepoRoot 'Install-ClaudeOAuthRefreshTask.ps1'
+$statusScript = Join-Path $RepoRoot 'Show-AIUsageGaugeStatus.ps1'
+$watchdogScript = Join-Path $RepoRoot 'Watch-AIUsageGaugeHealth.ps1'
 
 Assert-True (Test-Path -LiteralPath $startScript) 'Start-AIUsageGauge.ps1 is missing'
 Assert-True (Test-Path -LiteralPath $helperScript) 'Invoke-ClaudeOAuthRefresh.ps1 is missing'
 Assert-True (Test-Path -LiteralPath $hiddenRefreshLauncher) 'Invoke-ClaudeOAuthRefresh-hidden.vbs is missing'
 Assert-True (Test-Path -LiteralPath $taskInstaller) 'Install-ClaudeOAuthRefreshTask.ps1 is missing'
+Assert-True (Test-Path -LiteralPath $statusScript) 'Show-AIUsageGaugeStatus.ps1 is missing'
+Assert-True (Test-Path -LiteralPath $watchdogScript) 'Watch-AIUsageGaugeHealth.ps1 is missing'
 
 $start = Get-Content -Raw -LiteralPath $startScript
 $helper = Get-Content -Raw -LiteralPath $helperScript
 $hiddenLauncher = Get-Content -Raw -LiteralPath $hiddenRefreshLauncher
 $installer = Get-Content -Raw -LiteralPath $taskInstaller
+$status = Get-Content -Raw -LiteralPath $statusScript
+$watchdog = Get-Content -Raw -LiteralPath $watchdogScript
 
 Assert-True ($start -match 'Global\\AIUsageGauge') 'Start script must create a named mutex'
 Assert-True ($start -match '再ログイン要') 'Expired Claude auth must show a relogin-required label'
@@ -47,6 +53,8 @@ Assert-True ($helper -notmatch 'accessToken|refreshToken') 'Helper must not read
 Assert-True ($helper -match 'Write-RefreshEvent') 'Helper must write token-free diagnostic events'
 Assert-True ($helper -notmatch 'RegisterTaskDefinition') 'Helper must not rewrite scheduled task definitions at runtime'
 Assert-True ($helper -match 'Limit-RefreshEventLog') 'Helper must rotate diagnostic logs'
+Assert-True ($helper -match 'Watch-AIUsageGaugeHealth\.ps1') 'Existing Claude refresh heartbeat must invoke the watchdog'
+Assert-True ($helper -match 'SkipClaudeRefreshTaskCheck') 'Refresh heartbeat watchdog call must not recursively repair its own task'
 
 Assert-True ($hiddenLauncher -match 'shell\.Run\s*\(\s*command\s*,\s*0\s*,\s*True\s*\)') 'Hidden launcher must run the refresh helper without showing a terminal'
 Assert-True ($installer -match "wscript\.exe") 'Scheduled task must use wscript.exe so refresh checks do not flash a terminal'
@@ -54,5 +62,20 @@ Assert-True ($installer -notmatch '\$action\.Path\s*=\s*\$pwsh') 'Scheduled task
 Assert-True ($installer -match '\[int\]\$IntervalMinutes\s*=\s*5') 'Scheduled task interval should default to 5 minutes'
 Assert-True ($installer -match 'Repetition\.Interval') 'Scheduled task must keep a fixed hidden heartbeat that does not need runtime task rewrites'
 Assert-True ($installer -match 'Triggers\.Create\(9\)') 'Scheduled task must run at logon as a self-healing fallback'
+
+Assert-True ($status -match 'Get-AIUsageGaugeStatus') 'Status script must expose a structured status function'
+Assert-True ($status -notmatch 'accessToken|refreshToken|Authorization') 'Status script must not read or print token values'
+Assert-True ($status -match 'expiresAt') 'Status script must report Claude credential expiry metadata'
+Assert-True ($status -match 'LastTaskResult') 'Status script must report scheduled task result codes'
+Assert-True ($status -match 'RecentEvents') 'Status script must include recent token-free diagnostic events'
+
+Assert-True ($watchdog -match 'Start-AIUsageGauge-hidden\.vbs') 'Watchdog must restart the gauge through the hidden launcher'
+Assert-True ($watchdog -match 'Install-ClaudeOAuthRefreshTask\.ps1') 'Watchdog must repair the Claude refresh task'
+Assert-True ($watchdog -match '\[switch\]\$SkipClaudeRefreshTaskCheck') 'Watchdog must support skipping refresh task checks when called from that task'
+Assert-True ($watchdog -match 'Get-CimInstance\s+Win32_Process') 'Watchdog must inspect running Gauge processes'
+Assert-True ($watchdog -match 'Start-AIUsageGauge\.ps1') 'Watchdog process matching must be scoped to Start-AIUsageGauge.ps1'
+Assert-True ($watchdog -notmatch 'Stop-Process') 'Watchdog must not kill processes automatically'
+Assert-True ($watchdog -match 'Write-WatchdogEvent') 'Watchdog must write token-free diagnostic events'
+Assert-True ($watchdog -match 'Limit-WatchdogEventLog') 'Watchdog must rotate diagnostic logs'
 
 Write-Host 'AI Usage Gauge tests passed'

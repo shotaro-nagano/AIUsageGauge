@@ -9,6 +9,7 @@ $ErrorActionPreference = 'Stop'
 $EventLogDir = Join-Path $env:LOCALAPPDATA 'AIUsageGauge'
 $EventLogPath = Join-Path $EventLogDir 'events.log'
 $MaxEventLogBytes = 262144
+$HealthWatchdogPath = Join-Path $PSScriptRoot 'Watch-AIUsageGaugeHealth.ps1'
 
 function Limit-RefreshEventLog {
     try {
@@ -94,6 +95,20 @@ function Get-ClaudeCliPath {
     return $cli.FullName
 }
 
+function Invoke-AIUsageGaugeHealthWatchdog {
+    try {
+        if (!(Test-Path -LiteralPath $HealthWatchdogPath)) {
+            Write-RefreshEvent 'health_watchdog_missing'
+            return
+        }
+
+        & $HealthWatchdogPath -Quiet -SkipClaudeRefreshTaskCheck | Out-Null
+        Write-RefreshEvent 'health_watchdog_invoked'
+    } catch {
+        Write-RefreshEvent 'health_watchdog_failed' @{ error = $_.Exception.Message }
+    }
+}
+
 $mutex = [System.Threading.Mutex]::new($false, 'Global\AIUsageGaugeClaudeOAuthRefresh')
 $hasMutex = $false
 
@@ -104,6 +119,8 @@ try {
         Write-Status 'refresh_already_running'
         exit 0
     }
+
+    Invoke-AIUsageGaugeHealthWatchdog
 
     $now = [DateTimeOffset]::UtcNow
     $expiresAt = Get-CredentialExpiry -Path $CredentialsPath

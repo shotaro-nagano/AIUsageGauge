@@ -8,6 +8,7 @@
 > - `RefreshSeconds` 既定値を `60` → `180` 秒に変更（API リクエスト頻度を 1/3 に削減）
 > - `Get-FillBrush` の色ロジックを残量パーセントの 5 段階信号色に変更（10% 以下: 赤 / 25% 以下: 橙 / 50% 以下: 黄 / 75% 以下: 黄緑 / 76% 以上: 緑）。短期・長期共通の判定。
 > - Claude OAuth トークンの自動更新を堅牢化（標準 Claude CLI に refresh を委譲 / hidden scheduled task でローカル期限を確認 / ログオン・スリープ復帰で自己修復 / 429 バックオフ + 状態の永続化）。再ログインの手間を最小化。
+> - Watchdog と診断コマンドを追加（既存の hidden refresh task から Gauge の生存確認 / Claude refresh task の修復 / トークン非表示の状態確認）。
 
 ---
 
@@ -94,6 +95,24 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\Install-ClaudeOAuthRefreshTask.p
 登録されるタスクは、5分ごとにローカルの `expiresAt` だけを確認し、残り30秒以内または失効済みのときだけ Claude CLI を起動します。期限が十分残っている通常時は、OAuth エンドポイントも Claude CLI も呼びません。
 
 ログオン時とスリープ復帰時にも同じ helper を実行するため、PC 再起動や長時間スリープ後も手動操作なしで復帰しやすくしています。タスクは `wscript.exe` 経由で非表示実行されるため、通常の期限チェックでターミナルは開きません。
+
+## Watchdog と診断
+
+既存の `ClaudeOAuthRefresh` scheduled task は、5分ごとの hidden heartbeat として Watchdog も呼び出します。Watchdog は非表示で短時間だけ動き、Gauge が落ちていれば `Start-AIUsageGauge-hidden.vbs` から再起動します。
+
+Watchdog を手動で実行した場合は、Claude refresh task が壊れている場合も同梱 installer で修復を試みます。scheduled task から呼ばれる通常経路では、自分自身のタスク定義を書き換えないため、権限エラーを増やしません。
+
+状態確認は次のコマンドで実行できます。トークン値は表示しません。
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\Show-AIUsageGaugeStatus.ps1
+```
+
+機械読み取り用には JSON 出力もできます。
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\Show-AIUsageGaugeStatus.ps1 -Json
+```
 
 ## 操作
 
