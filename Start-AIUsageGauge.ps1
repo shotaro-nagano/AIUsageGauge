@@ -35,12 +35,39 @@ $ClaudeConfigDir = if ([string]::IsNullOrWhiteSpace($env:CLAUDE_CONFIG_DIR)) {
 $ClaudeCredsPath = Join-Path $ClaudeConfigDir '.credentials.json'
 $ClaudeApiUri = 'https://api.anthropic.com/v1/messages'
 $ClaudeRefreshHelperPath = Join-Path $ScriptDir 'Invoke-ClaudeOAuthRefresh.ps1'
+$ClaudeRefreshHiddenLauncherPath = Join-Path $ScriptDir 'Invoke-ClaudeOAuthRefresh-hidden.vbs'
+$ClaudeRefreshTaskInstallerPath = Join-Path $ScriptDir 'Install-ClaudeOAuthRefreshTask.ps1'
 $script:ClaudeRefreshAttemptedAt = [DateTimeOffset]::MinValue  # 最後に refresh を試みた時刻
 $script:ClaudeNeedsRelogin = $false
 
 # --- Option B: refresh 状態を永続化（再起動しても連打しないための backoff）---
 $RefreshStateDir = Join-Path $env:LOCALAPPDATA 'AIUsageGauge'
 $RefreshStatePath = Join-Path $RefreshStateDir 'claude-refresh-state.json'
+$EventLogPath = Join-Path $RefreshStateDir 'events.log'
+
+function Write-AIUsageGaugeEvent {
+    param(
+        [string]$Event,
+        [hashtable]$Data = @{}
+    )
+
+    try {
+        if (!(Test-Path -LiteralPath $RefreshStateDir)) {
+            New-Item -ItemType Directory -Force -Path $RefreshStateDir | Out-Null
+        }
+
+        $entry = [ordered]@{
+            timestamp = [DateTimeOffset]::UtcNow.ToString('o')
+            event = $Event
+        }
+        foreach ($key in $Data.Keys) {
+            if ($key -match 'token|authorization|secret') { continue }
+            $entry[$key] = $Data[$key]
+        }
+
+        ($entry | ConvertTo-Json -Compress) | Add-Content -LiteralPath $EventLogPath -Encoding UTF8
+    } catch {}
+}
 
 function Get-RefreshState {
     try {
@@ -58,6 +85,40 @@ function Set-RefreshState($State) {
         }
         $State | ConvertTo-Json | Set-Content -LiteralPath $RefreshStatePath -Encoding UTF8
     } catch {}
+}
+
+function Test-ClaudeRefreshTaskCurrent {
+    try {
+        $task = Get-ScheduledTask -TaskPath '\AIUsageGauge\' -TaskName 'ClaudeOAuthRefresh' -ErrorAction Stop
+        $action = $task.Actions | Select-Object -First 1
+        $expectedWscript = Join-Path $env:WINDIR 'System32\wscript.exe'
+        return (
+            $null -ne $action -and
+            $action.Execute -ieq $expectedWscript -and
+            $action.Arguments -like '*Invoke-ClaudeOAuthRefresh-hidden.vbs*' -and
+            [bool]$task.Settings.Hidden
+        )
+    } catch {
+        return $false
+    }
+}
+
+function Ensure-ClaudeRefreshTask {
+    if (!(Test-Path -LiteralPath $ClaudeRefreshTaskInstallerPath)) {
+        Write-AIUsageGaugeEvent 'refresh_task_installer_missing'
+        return
+    }
+
+    if (Test-ClaudeRefreshTaskCurrent) {
+        return
+    }
+
+    try {
+        & $ClaudeRefreshTaskInstallerPath -IntervalMinutes 5 | Out-Null
+        Write-AIUsageGaugeEvent 'refresh_task_repaired'
+    } catch {
+        Write-AIUsageGaugeEvent 'refresh_task_repair_failed' @{ error = $_.Exception.Message }
+    }
 }
 
 $script:ManualOffsetX = 0
@@ -124,25 +185,48 @@ function Get-CodexUsage {
 }
 
 function Invoke-ClaudeTokenRefresh($Creds) {
-    if (!(Test-Path -LiteralPath $ClaudeRefreshHelperPath)) {
-        throw "Claude OAuth refresh helper was not found: $ClaudeRefreshHelperPath"
+    if (!(Test-Path -LiteralPath $ClaudeRefreshHiddenLauncherPath)) {
+        throw "AIUG_REFRESH_HELPER_MISSING"
     }
 
-    $pwsh = (Get-Command pwsh -ErrorAction Stop).Source
-    & $pwsh -NoProfile -ExecutionPolicy Bypass -File $ClaudeRefreshHelperPath `
-        -CredentialsPath $ClaudeCredsPath `
-        -RefreshWindowSeconds 30 `
-        -Quiet
-    if ($LASTEXITCODE -ne 0) {
-        throw "claude_cli_refresh_failed:$LASTEXITCODE"
+    $wscript = Join-Path $env:WINDIR 'System32\wscript.exe'
+    if (!(Test-Path -LiteralPath $wscript)) {
+        throw "AIUG_REFRESH_HELPER_MISSING"
+    }
+
+    Write-AIUsageGaugeEvent 'foreground_refresh_start'
+
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $wscript
+    $psi.Arguments = ('//B //Nologo "{0}"' -f $ClaudeRefreshHiddenLauncherPath)
+    $psi.WorkingDirectory = $ScriptDir
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+
+    $process = [System.Diagnostics.Process]::Start($psi)
+    if ($null -eq $process) {
+        throw "AIUG_REFRESH_FAILED:process_start"
+    }
+
+    if (-not $process.WaitForExit(120000)) {
+        try { $process.Kill() } catch {}
+        Write-AIUsageGaugeEvent 'foreground_refresh_timeout'
+        throw "AIUG_REFRESH_FAILED:timeout"
+    }
+
+    if ($process.ExitCode -ne 0) {
+        Write-AIUsageGaugeEvent 'foreground_refresh_failed' @{ exitCode = $process.ExitCode }
+        throw "AIUG_REFRESH_FAILED:$($process.ExitCode)"
     }
 
     $updatedCreds = Get-Content -LiteralPath $ClaudeCredsPath -Raw | ConvertFrom-Json
     $token = $updatedCreds.claudeAiOauth.accessToken
     if ([string]::IsNullOrWhiteSpace($token)) {
-        throw "Claude access token was not found after CLI refresh"
+        throw "AIUG_REFRESH_FAILED:no_access_token"
     }
 
+    Write-AIUsageGaugeEvent 'foreground_refresh_success'
     return $token
 }
 
@@ -171,7 +255,9 @@ function Get-ClaudeUsage {
             $token = $creds.claudeAiOauth.accessToken
             $expiresAt = [DateTimeOffset]::FromUnixTimeMilliseconds($creds.claudeAiOauth.expiresAt)
             $needRefresh = $now -gt $expiresAt.AddSeconds(-30)
-        } catch {}
+        } catch {
+            Write-AIUsageGaugeEvent 'credentials_reread_failed' @{ error = $_.Exception.Message }
+        }
     }
 
     if ($needRefresh) {
@@ -179,7 +265,7 @@ function Get-ClaudeUsage {
         $backoffUntil = if ($state.backoffUntil) { [DateTimeOffset]::Parse($state.backoffUntil) } else { [DateTimeOffset]::MinValue }
         if ($now -lt $backoffUntil) {
             # バックオフ中は refresh を叩かない。完全失効なら使えない
-            if ($now -gt $expiresAt) { throw "token_expired" }
+            if ($now -gt $expiresAt) { throw "AIUG_TOKEN_EXPIRED" }
         } else {
             try {
                 $token = Invoke-ClaudeTokenRefresh $creds
@@ -188,7 +274,8 @@ function Get-ClaudeUsage {
                 $is429 = ($_.Exception.Message -match '429|Too Many|rate')
                 $backoff = if ($is429) { $now.AddMinutes(60) } else { $now.AddMinutes(5) }
                 Set-RefreshState ([pscustomobject]@{ backoffUntil = $backoff.ToString('o'); lastSuccess = $state.lastSuccess })
-                if ($now -gt $expiresAt) { throw "token_expired" }
+                Write-AIUsageGaugeEvent 'foreground_refresh_error' @{ error = $_.Exception.Message; backoffUntil = $backoff.ToString('o') }
+                if ($now -gt $expiresAt) { throw "AIUG_TOKEN_EXPIRED" }
                 # まだ少し有効なら古いトークンのまま続行
             }
         }
@@ -473,7 +560,7 @@ function Update-Usage {
     } catch {
         $claudeTitle.Text = 'Claude rate'
         $errMsg = $_.Exception.Message
-        if ($errMsg -match 'token_expired|401|Unauthorized') {
+        if ($errMsg -match 'AIUG_TOKEN_EXPIRED|401|Unauthorized') {
             Set-Row $claude5hRow 0
             Set-Row $claude7dRow 0
             $claude5hRow.Fill.Fill = '#475569'
@@ -489,6 +576,8 @@ function Update-Usage {
         }
     }
 }
+
+Ensure-ClaudeRefreshTask
 
 $positionTimer = New-Object System.Windows.Threading.DispatcherTimer
 $positionTimer.Interval = [TimeSpan]::FromMilliseconds(200)

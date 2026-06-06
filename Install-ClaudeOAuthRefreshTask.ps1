@@ -1,7 +1,7 @@
 ﻿param(
     [string]$TaskFolder = '\AIUsageGauge\',
     [string]$TaskName = 'ClaudeOAuthRefresh',
-    [int]$IntervalMinutes = 1
+    [int]$IntervalMinutes = 5
 )
 
 $ErrorActionPreference = 'Stop'
