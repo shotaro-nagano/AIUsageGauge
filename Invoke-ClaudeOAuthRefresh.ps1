@@ -1,0 +1,93 @@
+﻿param(
+    [string]$CredentialsPath = (Join-Path $env:USERPROFILE '.claude\.credentials.json'),
+    [string]$ClaudeCodeRoot = (Join-Path $env:LOCALAPPDATA 'Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude-code'),
+    [int]$RefreshWindowSeconds = 30,
+    [switch]$Quiet
+)
+
+$ErrorActionPreference = 'Stop'
+
+function Write-Status {
+    param([string]$Message)
+    if (-not $Quiet) {
+        Write-Host $Message
+    }
+}
+
+function Get-CredentialExpiry {
+    param([string]$Path)
+
+    if (!(Test-Path -LiteralPath $Path)) {
+        throw "credentials_not_found"
+    }
+
+    $json = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+    if ($null -eq $json.claudeAiOauth -or $null -eq $json.claudeAiOauth.expiresAt) {
+        throw "credentials_missing_expiresAt"
+    }
+
+    return [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$json.claudeAiOauth.expiresAt)
+}
+
+function Get-ClaudeCliPath {
+    param([string]$Root)
+
+    if (!(Test-Path -LiteralPath $Root)) {
+        throw "claude_code_root_not_found"
+    }
+
+    $cli = Get-ChildItem -LiteralPath $Root -Recurse -Filter claude.exe -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+
+    if ($null -eq $cli) {
+        throw "claude_cli_not_found"
+    }
+
+    return $cli.FullName
+}
+
+$mutex = [System.Threading.Mutex]::new($false, 'Global\AIUsageGaugeClaudeOAuthRefresh')
+$hasMutex = $false
+
+try {
+    $hasMutex = $mutex.WaitOne(0)
+    if (-not $hasMutex) {
+        Write-Status 'refresh_already_running'
+        exit 0
+    }
+
+    $now = [DateTimeOffset]::UtcNow
+    $expiresAt = Get-CredentialExpiry -Path $CredentialsPath
+    $remaining = ($expiresAt - $now).TotalSeconds
+
+    if ($remaining -gt $RefreshWindowSeconds) {
+        Write-Status ('fresh_until {0:o}' -f $expiresAt)
+        exit 0
+    }
+
+    $claude = Get-ClaudeCliPath -Root $ClaudeCodeRoot
+    & $claude -p 'Respond with exactly OK.' --output-format text --model haiku --no-session-persistence *> $null
+    $cliExit = $LASTEXITCODE
+    if ($cliExit -ne 0) {
+        Write-Status "claude_cli_failed:$cliExit"
+        exit $cliExit
+    }
+
+    $afterExpiresAt = Get-CredentialExpiry -Path $CredentialsPath
+    if ($afterExpiresAt -le ([DateTimeOffset]::UtcNow.AddSeconds($RefreshWindowSeconds))) {
+        Write-Status 'refresh_did_not_extend_credentials'
+        exit 20
+    }
+
+    Write-Status ('refreshed_until {0:o}' -f $afterExpiresAt)
+    exit 0
+} catch {
+    Write-Status $_.Exception.Message
+    exit 1
+} finally {
+    if ($hasMutex) {
+        $mutex.ReleaseMutex()
+    }
+    $mutex.Dispose()
+}

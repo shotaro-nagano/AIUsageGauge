@@ -6,6 +6,19 @@
 
 $ErrorActionPreference = 'Stop'
 
+$ScriptDir = if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+    Split-Path -Parent $MyInvocation.MyCommand.Path
+} else {
+    $PSScriptRoot
+}
+
+$createdNew = $false
+$script:SingleInstanceMutex = [System.Threading.Mutex]::new($true, 'Global\AIUsageGauge', [ref]$createdNew)
+if (-not $createdNew) {
+    $script:SingleInstanceMutex.Dispose()
+    return
+}
+
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
@@ -21,7 +34,9 @@ $ClaudeConfigDir = if ([string]::IsNullOrWhiteSpace($env:CLAUDE_CONFIG_DIR)) {
 }
 $ClaudeCredsPath = Join-Path $ClaudeConfigDir '.credentials.json'
 $ClaudeApiUri = 'https://api.anthropic.com/v1/messages'
+$ClaudeRefreshHelperPath = Join-Path $ScriptDir 'Invoke-ClaudeOAuthRefresh.ps1'
 $script:ClaudeRefreshAttemptedAt = [DateTimeOffset]::MinValue  # 最後に refresh を試みた時刻
+$script:ClaudeNeedsRelogin = $false
 
 # --- Option B: refresh 状態を永続化（再起動しても連打しないための backoff）---
 $RefreshStateDir = Join-Path $env:LOCALAPPDATA 'AIUsageGauge'
@@ -109,33 +124,26 @@ function Get-CodexUsage {
 }
 
 function Invoke-ClaudeTokenRefresh($Creds) {
-    $refreshToken = $Creds.claudeAiOauth.refreshToken
-    if ([string]::IsNullOrWhiteSpace($refreshToken)) {
-        throw "No refresh token available"
+    if (!(Test-Path -LiteralPath $ClaudeRefreshHelperPath)) {
+        throw "Claude OAuth refresh helper was not found: $ClaudeRefreshHelperPath"
     }
 
-    $formBody = @{
-        grant_type = 'refresh_token'
-        refresh_token = $refreshToken
-        client_id = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
+    $pwsh = (Get-Command pwsh -ErrorAction Stop).Source
+    & $pwsh -NoProfile -ExecutionPolicy Bypass -File $ClaudeRefreshHelperPath `
+        -CredentialsPath $ClaudeCredsPath `
+        -RefreshWindowSeconds 30 `
+        -Quiet
+    if ($LASTEXITCODE -ne 0) {
+        throw "claude_cli_refresh_failed:$LASTEXITCODE"
     }
-    $result = Invoke-RestMethod -Uri 'https://platform.claude.com/v1/oauth/token' `
-        -Method POST -ContentType 'application/x-www-form-urlencoded' `
-        -Body $formBody -TimeoutSec 20
 
-    # expiresIn は秒、expiresAt はミリ秒で保存
-    $expiresAt = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) + ($result.expires_in * 1000)
-
-    # 既存の認証情報を更新して書き戻す
-    $newCreds = $Creds | ConvertTo-Json -Depth 5 | ConvertFrom-Json
-    $newCreds.claudeAiOauth.accessToken  = $result.access_token
-    $newCreds.claudeAiOauth.expiresAt    = $expiresAt
-    if ($result.refresh_token) {
-        $newCreds.claudeAiOauth.refreshToken = $result.refresh_token
+    $updatedCreds = Get-Content -LiteralPath $ClaudeCredsPath -Raw | ConvertFrom-Json
+    $token = $updatedCreds.claudeAiOauth.accessToken
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        throw "Claude access token was not found after CLI refresh"
     }
-    $newCreds | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ClaudeCredsPath -Encoding UTF8
 
-    return $result.access_token
+    return $token
 }
 
 
@@ -153,8 +161,8 @@ function Get-ClaudeUsage {
     # --- Option B: 先回り refresh + ファイル再読込 + 429 バックオフ ---
     $now = [DateTimeOffset]::UtcNow
     $expiresAt = [DateTimeOffset]::FromUnixTimeMilliseconds($creds.claudeAiOauth.expiresAt)
-    # 失効30分前から refresh 対象にする（できるだけ失効させない）
-    $needRefresh = $now -gt $expiresAt.AddMinutes(-30)
+    # Claude CLI は残り30秒以下で同期 refresh するため、直接エンドポイントは叩かずCLIに任せる
+    $needRefresh = $now -gt $expiresAt.AddSeconds(-30)
 
     if ($needRefresh) {
         # 他クライアント(Claude Code等)が既に更新しているかもしれないので読み直す
@@ -162,7 +170,7 @@ function Get-ClaudeUsage {
             $creds = Get-Content -LiteralPath $ClaudeCredsPath -Raw | ConvertFrom-Json
             $token = $creds.claudeAiOauth.accessToken
             $expiresAt = [DateTimeOffset]::FromUnixTimeMilliseconds($creds.claudeAiOauth.expiresAt)
-            $needRefresh = $now -gt $expiresAt.AddMinutes(-30)
+            $needRefresh = $now -gt $expiresAt.AddSeconds(-30)
         } catch {}
     }
 
@@ -178,7 +186,7 @@ function Get-ClaudeUsage {
                 Set-RefreshState ([pscustomobject]@{ backoffUntil = $null; lastSuccess = $now.ToString('o') })
             } catch {
                 $is429 = ($_.Exception.Message -match '429|Too Many|rate')
-                $backoff = if ($is429) { $now.AddMinutes(60) } else { $now.AddMinutes(15) }
+                $backoff = if ($is429) { $now.AddMinutes(60) } else { $now.AddMinutes(5) }
                 Set-RefreshState ([pscustomobject]@{ backoffUntil = $backoff.ToString('o'); lastSuccess = $state.lastSuccess })
                 if ($now -gt $expiresAt) { throw "token_expired" }
                 # まだ少し有効なら古いトークンのまま続行
@@ -212,6 +220,22 @@ function Get-ClaudeUsage {
         FiveHourReset = if ($reset5hTs) { [Math]::Max(0, [long]$reset5hTs - $now) } else { 0 }
         SevenDayReset = if ($reset7dTs) { [Math]::Max(0, [long]$reset7dTs - $now) } else { 0 }
         UpdatedAt = Get-Date
+    }
+}
+
+function Start-ClaudeRelogin {
+    $desktop = [Environment]::GetFolderPath('Desktop')
+    $candidates = @(
+        (Join-Path $desktop 'Claude再ログイン.lnk'),
+        (Join-Path $env:USERPROFILE 'OneDrive\デスクトップ\Claude再ログイン.lnk'),
+        (Join-Path $ScriptDir 'Claude-relogin.cmd')
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) {
+            Start-Process -FilePath $candidate
+            return
+        }
     }
 }
 
@@ -388,6 +412,13 @@ $claudeFooter.Foreground = '#94a3b8'
 $claudeFooter.FontSize = 8
 $claudeFooter.Margin = '0,0,0,0'
 $claudeFooter.Text = 'loading...'
+$claudeFooter.Cursor = [System.Windows.Input.Cursors]::Hand
+$claudeFooter.ToolTip = 'Click when Claude relogin is required.'
+$claudeFooter.Add_MouseLeftButtonUp({
+    if ($script:ClaudeNeedsRelogin) {
+        Start-ClaudeRelogin
+    }
+})
 $stack.Children.Add($claudeFooter) | Out-Null
 
 $outer.Child = $stack
@@ -438,15 +469,23 @@ function Update-Usage {
         Set-Row $claude7dRow $cl.SevenDayRemaining
         $claudeFooter.Text = ('reset {0} / {1}' -f (Format-Duration $cl.FiveHourReset), (Format-Duration $cl.SevenDayReset))
         $claudeTitle.Text = 'Claude rate'
+        $script:ClaudeNeedsRelogin = $false
     } catch {
         $claudeTitle.Text = 'Claude rate'
         $errMsg = $_.Exception.Message
         if ($errMsg -match 'token_expired|401|Unauthorized') {
-            $claudeFooter.Text = 'open Claude Code to refresh'
+            Set-Row $claude5hRow 0
+            Set-Row $claude7dRow 0
+            $claude5hRow.Fill.Fill = '#475569'
+            $claude7dRow.Fill.Fill = '#475569'
+            $claudeFooter.Text = '🔑 再ログイン要'
+            $script:ClaudeNeedsRelogin = $true
         } elseif ($errMsg -match '429|rate.limit|Rate') {
             $claudeFooter.Text = 'refresh limited - retrying...'
+            $script:ClaudeNeedsRelogin = $false
         } else {
             $claudeFooter.Text = 'unavailable'
+            $script:ClaudeNeedsRelogin = $false
         }
     }
 }
@@ -466,4 +505,11 @@ $window.Add_SourceInitialized({
     Update-Usage
 })
 
-$null = $window.ShowDialog()
+try {
+    $null = $window.ShowDialog()
+} finally {
+    if ($script:SingleInstanceMutex) {
+        $script:SingleInstanceMutex.ReleaseMutex()
+        $script:SingleInstanceMutex.Dispose()
+    }
+}

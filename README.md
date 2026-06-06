@@ -79,10 +79,26 @@ pwsh -STA -ExecutionPolicy Bypass -File .\Start-AIUsageGauge.ps1 -Placement righ
 `Start-AIUsageGauge-hidden.vbs` だけを配布・移動しても動きません。
 必ず `Start-AIUsageGauge.ps1` と同じフォルダに置いてください。
 
+## Claude OAuth 自動更新
+
+Claude Code の標準 CLI は、OAuth アクセストークンの有効期限が十分残っている間は `.credentials.json` を更新しません。確認した Claude Code 2.1.149 では、残り時間が短いときだけ CLI 内部の refresh が動く挙動でした。
+
+このため、AI Usage Gauge は `platform.claude.com/v1/oauth/token` を直接叩かず、期限切れ直前または期限切れ時だけ同梱の `Invoke-ClaudeOAuthRefresh.ps1` から標準 `claude.exe` を短時間起動します。通常時はローカルの `expiresAt` を読むだけで、トークン値は表示しません。
+
+自動更新タスクを登録する場合:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\Install-ClaudeOAuthRefreshTask.ps1
+```
+
+登録されるタスクは、1分ごとにローカル期限を確認し、残り30秒以内または失効済みのときだけ Claude CLI を起動します。スリープ復帰イベントでも同じ helper を実行します。
+
 ## 操作
 
 - ドラッグ: ゲージ位置を調整
 - 右クリック: ゲージを閉じる
+
+Claude の認証が失効して自動更新できない場合は、Claude 欄に `🔑 再ログイン要` と表示します。その表示をクリックすると、デスクトップの `Claude再ログイン.lnk` または同梱の `Claude-relogin.cmd` を起動します。
 
 ドラッグで移動した場合、その起動中は CodexPets からの相対位置として追従します。
 
