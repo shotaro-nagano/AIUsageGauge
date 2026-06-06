@@ -17,8 +17,16 @@ if (!(Test-Path -LiteralPath $helperPath)) {
     throw "Invoke-ClaudeOAuthRefresh.ps1 was not found next to this installer."
 }
 
-$pwsh = (Get-Command pwsh -ErrorAction Stop).Source
-$arguments = ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -Quiet' -f $helperPath)
+$hiddenLauncherPath = Join-Path $scriptDir 'Invoke-ClaudeOAuthRefresh-hidden.vbs'
+if (!(Test-Path -LiteralPath $hiddenLauncherPath)) {
+    throw "Invoke-ClaudeOAuthRefresh-hidden.vbs was not found next to this installer."
+}
+
+$wscript = Join-Path $env:WINDIR 'System32\wscript.exe'
+if (!(Test-Path -LiteralPath $wscript)) {
+    throw "wscript.exe was not found."
+}
+$arguments = ('//B //Nologo "{0}"' -f $hiddenLauncherPath)
 
 $service = New-Object -ComObject Schedule.Service
 $service.Connect()
@@ -40,7 +48,7 @@ if ($folderPath) {
 $task = $service.NewTask(0)
 $task.RegistrationInfo.Description = 'Keeps Claude OAuth credentials fresh for AI Usage Gauge without logging token values.'
 $task.Settings.Enabled = $true
-$task.Settings.Hidden = $false
+$task.Settings.Hidden = $true
 $task.Settings.StartWhenAvailable = $true
 $task.Settings.WakeToRun = $true
 $task.Settings.DisallowStartIfOnBatteries = $false
@@ -64,7 +72,7 @@ $wakeTrigger.Subscription = @'
 '@
 
 $action = $task.Actions.Create(0)
-$action.Path = $pwsh
+$action.Path = $wscript
 $action.Arguments = $arguments
 $action.WorkingDirectory = $scriptDir
 

@@ -91,7 +91,7 @@ Claude Code の標準 CLI は、OAuth アクセストークンの有効期限が
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\Install-ClaudeOAuthRefreshTask.ps1
 ```
 
-登録されるタスクは、1分ごとにローカル期限を確認し、残り30秒以内または失効済みのときだけ Claude CLI を起動します。スリープ復帰イベントでも同じ helper を実行します。
+登録されるタスクは、1分ごとにローカル期限を確認し、残り30秒以内または失効済みのときだけ Claude CLI を起動します。スリープ復帰イベントでも同じ helper を実行します。タスクは `wscript.exe` 経由で非表示実行されるため、通常の期限チェックでターミナルは開きません。
 
 ## 操作
 

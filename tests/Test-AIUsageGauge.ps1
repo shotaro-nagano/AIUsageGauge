@@ -16,12 +16,18 @@ function Assert-True {
 
 $startScript = Join-Path $RepoRoot 'Start-AIUsageGauge.ps1'
 $helperScript = Join-Path $RepoRoot 'Invoke-ClaudeOAuthRefresh.ps1'
+$hiddenRefreshLauncher = Join-Path $RepoRoot 'Invoke-ClaudeOAuthRefresh-hidden.vbs'
+$taskInstaller = Join-Path $RepoRoot 'Install-ClaudeOAuthRefreshTask.ps1'
 
 Assert-True (Test-Path -LiteralPath $startScript) 'Start-AIUsageGauge.ps1 is missing'
 Assert-True (Test-Path -LiteralPath $helperScript) 'Invoke-ClaudeOAuthRefresh.ps1 is missing'
+Assert-True (Test-Path -LiteralPath $hiddenRefreshLauncher) 'Invoke-ClaudeOAuthRefresh-hidden.vbs is missing'
+Assert-True (Test-Path -LiteralPath $taskInstaller) 'Install-ClaudeOAuthRefreshTask.ps1 is missing'
 
 $start = Get-Content -Raw -LiteralPath $startScript
 $helper = Get-Content -Raw -LiteralPath $helperScript
+$hiddenLauncher = Get-Content -Raw -LiteralPath $hiddenRefreshLauncher
+$installer = Get-Content -Raw -LiteralPath $taskInstaller
 
 Assert-True ($start -match 'Global\\AIUsageGauge') 'Start script must create a named mutex'
 Assert-True ($start -match '再ログイン要') 'Expired Claude auth must show a relogin-required label'
@@ -32,5 +38,9 @@ Assert-True ($helper -match 'claude-code') 'Helper must discover Claude Code ins
 Assert-True ($helper -match '--no-session-persistence') 'Helper must avoid persisting probe conversations'
 Assert-True ($helper -match 'RefreshWindowSeconds') 'Helper must guard CLI calls behind a local expiry window'
 Assert-True ($helper -notmatch 'accessToken|refreshToken') 'Helper must not read token values directly'
+
+Assert-True ($hiddenLauncher -match 'shell\.Run\s*\(\s*command\s*,\s*0\s*,\s*True\s*\)') 'Hidden launcher must run the refresh helper without showing a terminal'
+Assert-True ($installer -match "wscript\.exe") 'Scheduled task must use wscript.exe so refresh checks do not flash a terminal'
+Assert-True ($installer -notmatch '\$action\.Path\s*=\s*\$pwsh') 'Scheduled task must not launch pwsh.exe directly'
 
 Write-Host 'AI Usage Gauge tests passed'
