@@ -44,6 +44,25 @@ $script:ClaudeNeedsRelogin = $false
 $RefreshStateDir = Join-Path $env:LOCALAPPDATA 'AIUsageGauge'
 $RefreshStatePath = Join-Path $RefreshStateDir 'claude-refresh-state.json'
 $EventLogPath = Join-Path $RefreshStateDir 'events.log'
+$MaxEventLogBytes = 262144
+
+function Limit-AIUsageGaugeEventLog {
+    try {
+        if (!(Test-Path -LiteralPath $EventLogPath)) {
+            return
+        }
+
+        $logItem = Get-Item -LiteralPath $EventLogPath -ErrorAction Stop
+        if ($logItem.Length -le $MaxEventLogBytes) {
+            return
+        }
+
+        $tail = Get-Content -LiteralPath $EventLogPath -Tail 500 -ErrorAction Stop
+        $tempPath = "$EventLogPath.tmp"
+        $tail | Set-Content -LiteralPath $tempPath -Encoding UTF8
+        Move-Item -LiteralPath $tempPath -Destination $EventLogPath -Force
+    } catch {}
+}
 
 function Write-AIUsageGaugeEvent {
     param(
@@ -55,6 +74,8 @@ function Write-AIUsageGaugeEvent {
         if (!(Test-Path -LiteralPath $RefreshStateDir)) {
             New-Item -ItemType Directory -Force -Path $RefreshStateDir | Out-Null
         }
+
+        Limit-AIUsageGaugeEventLog
 
         $entry = [ordered]@{
             timestamp = [DateTimeOffset]::UtcNow.ToString('o')
@@ -114,7 +135,7 @@ function Ensure-ClaudeRefreshTask {
     }
 
     try {
-        & $ClaudeRefreshTaskInstallerPath -IntervalMinutes 5 | Out-Null
+        & $ClaudeRefreshTaskInstallerPath -IntervalMinutes 5 -Quiet | Out-Null
         Write-AIUsageGaugeEvent 'refresh_task_repaired'
     } catch {
         Write-AIUsageGaugeEvent 'refresh_task_repair_failed' @{ error = $_.Exception.Message }

@@ -8,6 +8,25 @@
 $ErrorActionPreference = 'Stop'
 $EventLogDir = Join-Path $env:LOCALAPPDATA 'AIUsageGauge'
 $EventLogPath = Join-Path $EventLogDir 'events.log'
+$MaxEventLogBytes = 262144
+
+function Limit-RefreshEventLog {
+    try {
+        if (!(Test-Path -LiteralPath $EventLogPath)) {
+            return
+        }
+
+        $logItem = Get-Item -LiteralPath $EventLogPath -ErrorAction Stop
+        if ($logItem.Length -le $MaxEventLogBytes) {
+            return
+        }
+
+        $tail = Get-Content -LiteralPath $EventLogPath -Tail 500 -ErrorAction Stop
+        $tempPath = "$EventLogPath.tmp"
+        $tail | Set-Content -LiteralPath $tempPath -Encoding UTF8
+        Move-Item -LiteralPath $tempPath -Destination $EventLogPath -Force
+    } catch {}
+}
 
 function Write-RefreshEvent {
     param(
@@ -19,6 +38,8 @@ function Write-RefreshEvent {
         if (!(Test-Path -LiteralPath $EventLogDir)) {
             New-Item -ItemType Directory -Force -Path $EventLogDir | Out-Null
         }
+
+        Limit-RefreshEventLog
 
         $entry = [ordered]@{
             timestamp = [DateTimeOffset]::UtcNow.ToString('o')

@@ -1,7 +1,8 @@
 ﻿param(
     [string]$TaskFolder = '\AIUsageGauge\',
     [string]$TaskName = 'ClaudeOAuthRefresh',
-    [int]$IntervalMinutes = 5
+    [int]$IntervalMinutes = 5,
+    [switch]$Quiet
 )
 
 $ErrorActionPreference = 'Stop'
@@ -71,6 +72,9 @@ $wakeTrigger.Subscription = @'
 </QueryList>
 '@
 
+$logonTrigger = $task.Triggers.Create(9)
+$logonTrigger.Enabled = $true
+
 $action = $task.Actions.Create(0)
 $action.Path = $wscript
 $action.Arguments = $arguments
@@ -78,4 +82,6 @@ $action.WorkingDirectory = $scriptDir
 
 $null = $folder.RegisterTaskDefinition($TaskName, $task, 6, $null, $null, 3)
 
-Write-Host ('Installed scheduled task {0}{1}' -f $TaskFolder, $TaskName)
+if (-not $Quiet) {
+    Write-Host ('Installed scheduled task {0}{1}; interval {2} minutes' -f $TaskFolder, $TaskName, $IntervalMinutes)
+}

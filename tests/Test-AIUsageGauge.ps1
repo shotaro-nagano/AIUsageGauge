@@ -37,6 +37,7 @@ Assert-True ($start -match 'Invoke-ClaudeOAuthRefresh-hidden\.vbs') 'Gauge must 
 Assert-True ($start -notmatch '&\s*\$pwsh\s+-NoProfile\s+-ExecutionPolicy\s+Bypass\s+-File\s+\$ClaudeRefreshHelperPath') 'Gauge must not launch pwsh.exe directly for Claude refresh'
 Assert-True ($start -match 'Ensure-ClaudeRefreshTask') 'Gauge startup must self-heal the Claude refresh scheduled task'
 Assert-True ($start -match 'Write-AIUsageGaugeEvent') 'Gauge must write token-free diagnostic events'
+Assert-True ($start -match 'Limit-AIUsageGaugeEventLog') 'Gauge must rotate diagnostic logs'
 Assert-True ($start -match 'AIUG_TOKEN_EXPIRED') 'Gauge must use stable coded errors for expired Claude auth'
 
 Assert-True ($helper -match 'claude-code') 'Helper must discover Claude Code installs dynamically'
@@ -44,10 +45,14 @@ Assert-True ($helper -match '--no-session-persistence') 'Helper must avoid persi
 Assert-True ($helper -match 'RefreshWindowSeconds') 'Helper must guard CLI calls behind a local expiry window'
 Assert-True ($helper -notmatch 'accessToken|refreshToken') 'Helper must not read token values directly'
 Assert-True ($helper -match 'Write-RefreshEvent') 'Helper must write token-free diagnostic events'
+Assert-True ($helper -notmatch 'RegisterTaskDefinition') 'Helper must not rewrite scheduled task definitions at runtime'
+Assert-True ($helper -match 'Limit-RefreshEventLog') 'Helper must rotate diagnostic logs'
 
 Assert-True ($hiddenLauncher -match 'shell\.Run\s*\(\s*command\s*,\s*0\s*,\s*True\s*\)') 'Hidden launcher must run the refresh helper without showing a terminal'
 Assert-True ($installer -match "wscript\.exe") 'Scheduled task must use wscript.exe so refresh checks do not flash a terminal'
 Assert-True ($installer -notmatch '\$action\.Path\s*=\s*\$pwsh') 'Scheduled task must not launch pwsh.exe directly'
 Assert-True ($installer -match '\[int\]\$IntervalMinutes\s*=\s*5') 'Scheduled task interval should default to 5 minutes'
+Assert-True ($installer -match 'Repetition\.Interval') 'Scheduled task must keep a fixed hidden heartbeat that does not need runtime task rewrites'
+Assert-True ($installer -match 'Triggers\.Create\(9\)') 'Scheduled task must run at logon as a self-healing fallback'
 
 Write-Host 'AI Usage Gauge tests passed'
