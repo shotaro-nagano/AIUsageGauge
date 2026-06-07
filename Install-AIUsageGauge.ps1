@@ -58,6 +58,7 @@ function Ensure-SettingsFile {
         NotificationThresholdPercent = 10
         NotificationCooldownMinutes = 60
         StaleAfterMinutes = 5
+        LogRetentionDays = 2
         PersistWindowPosition = $true
         PackageName = 'AI-Usage-Gauge'
     } | ConvertTo-Json | Set-Content -LiteralPath $settingsPath -Encoding UTF8

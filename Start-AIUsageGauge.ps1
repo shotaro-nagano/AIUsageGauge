@@ -23,6 +23,7 @@ function New-DefaultAIUsageGaugeSettings {
         NotificationThresholdPercent = 10
         NotificationCooldownMinutes = 60
         StaleAfterMinutes = 5
+        LogRetentionDays = 2
         PersistWindowPosition = $true
         PackageName = 'AI-Usage-Gauge'
     }
@@ -94,11 +95,39 @@ $script:NotificationState = @{}
 $script:LastCodexUsage = $null
 $script:LastClaudeUsage = $null
 
+function Get-EventLogRetentionCutoffDate {
+    $retentionDays = [Math]::Max(1, [int]($Settings.LogRetentionDays ?? 2))
+    return (Get-Date).Date.AddDays(-($retentionDays - 1))
+}
+
 function Limit-AIUsageGaugeEventLog {
     try {
         if (!(Test-Path -LiteralPath $EventLogPath)) {
             return
         }
+
+        $cutoffDate = Get-EventLogRetentionCutoffDate
+        $keptLines = New-Object System.Collections.Generic.List[string]
+        foreach ($line in (Get-Content -LiteralPath $EventLogPath -ErrorAction Stop)) {
+            try {
+                $entry = $line | ConvertFrom-Json
+                if ($null -ne $entry.timestamp) {
+                    $eventDate = ([DateTimeOffset]::Parse([string]$entry.timestamp)).LocalDateTime.Date
+                    if ($eventDate -ge $cutoffDate) {
+                        $keptLines.Add($line)
+                    }
+                }
+            } catch {}
+        }
+
+        if ($keptLines.Count -eq 0) {
+            Remove-Item -LiteralPath $EventLogPath -Force -ErrorAction SilentlyContinue
+            return
+        }
+
+        $tempPath = "$EventLogPath.tmp"
+        $keptLines | Set-Content -LiteralPath $tempPath -Encoding UTF8
+        Move-Item -LiteralPath $tempPath -Destination $EventLogPath -Force
 
         $logItem = Get-Item -LiteralPath $EventLogPath -ErrorAction Stop
         if ($logItem.Length -le $MaxEventLogBytes) {
@@ -106,7 +135,6 @@ function Limit-AIUsageGaugeEventLog {
         }
 
         $tail = Get-Content -LiteralPath $EventLogPath -Tail 500 -ErrorAction Stop
-        $tempPath = "$EventLogPath.tmp"
         $tail | Set-Content -LiteralPath $tempPath -Encoding UTF8
         Move-Item -LiteralPath $tempPath -Destination $EventLogPath -Force
     } catch {}

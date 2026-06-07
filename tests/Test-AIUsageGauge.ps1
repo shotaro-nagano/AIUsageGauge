@@ -50,6 +50,8 @@ Assert-True ($start -notmatch '&\s*\$pwsh\s+-NoProfile\s+-ExecutionPolicy\s+Bypa
 Assert-True ($start -match 'Ensure-ClaudeRefreshTask') 'Gauge startup must self-heal the Claude refresh scheduled task'
 Assert-True ($start -match 'Write-AIUsageGaugeEvent') 'Gauge must write token-free diagnostic events'
 Assert-True ($start -match 'Limit-AIUsageGaugeEventLog') 'Gauge must rotate diagnostic logs'
+Assert-True ($start -match 'LogRetentionDays') 'Gauge log rotation must use day-based retention'
+Assert-True ($start -match 'Get-EventLogRetentionCutoffDate') 'Gauge log rotation must keep only the configured calendar-day window'
 Assert-True ($start -match 'AIUG_TOKEN_EXPIRED') 'Gauge must use stable coded errors for expired Claude auth'
 Assert-True ($start -match 'Get-AIUsageGaugeSettings') 'Gauge must load external settings'
 Assert-True ($start -match 'settings\.json') 'Gauge settings must live in settings.json'
@@ -68,6 +70,8 @@ Assert-True ($helper -notmatch 'accessToken|refreshToken') 'Helper must not read
 Assert-True ($helper -match 'Write-RefreshEvent') 'Helper must write token-free diagnostic events'
 Assert-True ($helper -notmatch 'RegisterTaskDefinition') 'Helper must not rewrite scheduled task definitions at runtime'
 Assert-True ($helper -match 'Limit-RefreshEventLog') 'Helper must rotate diagnostic logs'
+Assert-True ($helper -match 'LogRetentionDays') 'Helper log rotation must use day-based retention'
+Assert-True ($helper -match 'Get-EventLogRetentionCutoffDate') 'Helper log rotation must keep only the configured calendar-day window'
 Assert-True ($helper -match 'Watch-AIUsageGaugeHealth\.ps1') 'Existing Claude refresh heartbeat must invoke the watchdog'
 Assert-True ($helper -match 'SkipClaudeRefreshTaskCheck') 'Refresh heartbeat watchdog call must not recursively repair its own task'
 
@@ -94,6 +98,8 @@ Assert-True ($watchdog -match 'Start-AIUsageGauge\.ps1') 'Watchdog process match
 Assert-True ($watchdog -notmatch 'Stop-Process') 'Watchdog must not kill processes automatically'
 Assert-True ($watchdog -match 'Write-WatchdogEvent') 'Watchdog must write token-free diagnostic events'
 Assert-True ($watchdog -match 'Limit-WatchdogEventLog') 'Watchdog must rotate diagnostic logs'
+Assert-True ($watchdog -match 'LogRetentionDays') 'Watchdog log rotation must use day-based retention'
+Assert-True ($watchdog -match 'Get-EventLogRetentionCutoffDate') 'Watchdog log rotation must keep only the configured calendar-day window'
 
 Assert-True ($appInstaller -match 'CreateShortcut') 'Installer must create Windows shortcuts'
 Assert-True ($appInstaller -match 'Startup') 'Installer must register startup shortcut'
@@ -106,5 +112,6 @@ Assert-True ($settings -match '"NotificationThresholdPercent"\s*:\s*10') 'Defaul
 Assert-True ($settings -match '"StaleAfterMinutes"') 'Default settings must include stale threshold'
 Assert-True ($settings -match '"PersistWindowPosition"\s*:\s*true') 'Default settings must enable position persistence'
 Assert-True ($settings -match '"EnableNotifications"\s*:\s*true') 'Default settings must enable notifications'
+Assert-True ($settings -match '"LogRetentionDays"\s*:\s*2') 'Default settings must keep today and the previous day of events'
 
 Write-Host 'AI Usage Gauge tests passed'

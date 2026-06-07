@@ -10,6 +10,24 @@ $EventLogDir = Join-Path $env:LOCALAPPDATA 'AIUsageGauge'
 $EventLogPath = Join-Path $EventLogDir 'events.log'
 $MaxEventLogBytes = 262144
 $HealthWatchdogPath = Join-Path $PSScriptRoot 'Watch-AIUsageGaugeHealth.ps1'
+$SettingsPath = Join-Path $PSScriptRoot 'settings.json'
+
+function Get-EventLogRetentionDays {
+    try {
+        if (Test-Path -LiteralPath $SettingsPath) {
+            $settings = Get-Content -LiteralPath $SettingsPath -Raw | ConvertFrom-Json
+            if ($null -ne $settings.LogRetentionDays) {
+                return [Math]::Max(1, [int]$settings.LogRetentionDays)
+            }
+        }
+    } catch {}
+    return 2
+}
+
+function Get-EventLogRetentionCutoffDate {
+    $retentionDays = Get-EventLogRetentionDays
+    return (Get-Date).Date.AddDays(-($retentionDays - 1))
+}
 
 function Limit-RefreshEventLog {
     try {
@@ -17,13 +35,35 @@ function Limit-RefreshEventLog {
             return
         }
 
+        $cutoffDate = Get-EventLogRetentionCutoffDate
+        $keptLines = New-Object System.Collections.Generic.List[string]
+        foreach ($line in (Get-Content -LiteralPath $EventLogPath -ErrorAction Stop)) {
+            try {
+                $entry = $line | ConvertFrom-Json
+                if ($null -ne $entry.timestamp) {
+                    $eventDate = ([DateTimeOffset]::Parse([string]$entry.timestamp)).LocalDateTime.Date
+                    if ($eventDate -ge $cutoffDate) {
+                        $keptLines.Add($line)
+                    }
+                }
+            } catch {}
+        }
+
+        if ($keptLines.Count -eq 0) {
+            Remove-Item -LiteralPath $EventLogPath -Force -ErrorAction SilentlyContinue
+            return
+        }
+
+        $tempPath = "$EventLogPath.tmp"
+        $keptLines | Set-Content -LiteralPath $tempPath -Encoding UTF8
+        Move-Item -LiteralPath $tempPath -Destination $EventLogPath -Force
+
         $logItem = Get-Item -LiteralPath $EventLogPath -ErrorAction Stop
         if ($logItem.Length -le $MaxEventLogBytes) {
             return
         }
 
         $tail = Get-Content -LiteralPath $EventLogPath -Tail 500 -ErrorAction Stop
-        $tempPath = "$EventLogPath.tmp"
         $tail | Set-Content -LiteralPath $tempPath -Encoding UTF8
         Move-Item -LiteralPath $tempPath -Destination $EventLogPath -Force
     } catch {}
