@@ -406,8 +406,19 @@ function Convert-CodexRateLimitWindows {
             throw 'Codex rate limit window must include a positive limit_window_seconds value.'
         }
 
-        $remaining = Clamp-Percent (100 - [int]$window.used_percent)
-        $reset = [int]$window.reset_after_seconds
+        $usedPercentValue = $window.used_percent
+        if ($null -eq $usedPercentValue) {
+            throw 'Codex rate limit window must include a numeric used_percent value.'
+        }
+        try {
+            $usedPercent = [int]$usedPercentValue
+        } catch {
+            throw 'Codex rate limit window must include a numeric used_percent value.'
+        }
+
+        $remaining = Clamp-Percent (100 - $usedPercent)
+        $resetValue = $window.reset_after_seconds
+        $reset = if ($null -eq $resetValue) { $null } else { [int]$resetValue }
         if ($durationSeconds -le 86400) {
             $shortRemaining = $remaining
             $shortReset = $reset
@@ -709,8 +720,6 @@ function Set-Row($Row, [int]$Percent) {
 }
 
 function Set-RowUnavailable($Row) {
-    $innerWidth = [Math]::Max(0, $Row.Battery.ActualWidth - 4)
-    if ($innerWidth -eq 0) { $innerWidth = 80 }
     $Row.Fill.Width = 2
     $Row.Fill.Fill = '#475569'
     $Row.Value.Text = '--'

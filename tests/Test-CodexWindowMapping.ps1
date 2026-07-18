@@ -44,7 +44,7 @@ function Assert-Throws {
         return
     }
 
-    $script:assertionFailures.Add("$Message. Expected exception: $ExpectedMessage") | Out-Null
+    throw "$Message. Expected exception: $ExpectedMessage"
 }
 
 function Assert-Matches {
@@ -95,6 +95,7 @@ function Get-FunctionDefinitionAst([string]$FunctionName) {
 $requiredFunctions = @(
     'Clamp-Percent'
     'Convert-CodexRateLimitWindows'
+    'Get-FillBrush'
     'Set-Row'
     'Set-RowUnavailable'
     'Format-Duration'
@@ -113,16 +114,83 @@ foreach ($functionName in $requiredFunctions) {
     Invoke-Expression $definition.Extent.Text
 }
 
+$invalidUsedPercentMessage = 'Codex rate limit window must include a numeric used_percent value.'
+$invalidUsedPercentCases = @(
+    [pscustomobject]@{
+        Name = 'Missing used_percent'
+        Window = @{ limit_window_seconds = 18000; reset_after_seconds = 100 }
+    }
+    [pscustomobject]@{
+        Name = 'Null used_percent'
+        Window = @{ used_percent = $null; limit_window_seconds = 18000; reset_after_seconds = 100 }
+    }
+    [pscustomobject]@{
+        Name = 'Nonnumeric used_percent'
+        Window = @{ used_percent = 'not-a-number'; limit_window_seconds = 18000; reset_after_seconds = 100 }
+    }
+)
+
+foreach ($case in $invalidUsedPercentCases) {
+    $assertThrowsParams = @{
+        Action = {
+            Convert-CodexRateLimitWindows -PrimaryWindow $case.Window -SecondaryWindow $null | Out-Null
+        }
+        ExpectedMessage = $invalidUsedPercentMessage
+        Message = "$($case.Name) must be rejected instead of mapping to 100 percent remaining"
+    }
+    Assert-Throws @assertThrowsParams
+}
+
+$missingReset = Convert-CodexRateLimitWindows -PrimaryWindow @{
+    used_percent = 25
+    limit_window_seconds = 18000
+} -SecondaryWindow $null
+Assert-Null $missingReset.ShortReset 'Missing reset_after_seconds must remain null'
+
+$nullReset = Convert-CodexRateLimitWindows -PrimaryWindow @{
+    used_percent = 25
+    limit_window_seconds = 18000
+    reset_after_seconds = $null
+} -SecondaryWindow $null
+Assert-Null $nullReset.ShortReset 'Null reset_after_seconds must remain null'
+
+$zeroValues = Convert-CodexRateLimitWindows -PrimaryWindow @{
+    used_percent = 0
+    limit_window_seconds = 18000
+    reset_after_seconds = 0
+} -SecondaryWindow $null
+Assert-Equal 100 $zeroValues.ShortRemaining 'Zero used_percent must map to 100 percent remaining'
+Assert-Equal 0 $zeroValues.ShortReset 'Zero reset_after_seconds must remain zero'
+Assert-Equal ([int]) $zeroValues.ShortReset.GetType() 'Zero reset_after_seconds must remain numeric'
+
 $setRowText = $functionDefinitions['Set-Row'].Extent.Text
 $setRowUnavailableText = $functionDefinitions['Set-RowUnavailable'].Extent.Text
 
 Assert-Matches $setRowText '\$Row\.Value\.Foreground\s*=\s*[''"]#f8fafc[''"]' 'Set-Row must restore the available value foreground'
-Assert-Matches $setRowUnavailableText '\$innerWidth\s*=\s*\[Math\]::Max\(0,\s*\$Row\.Battery\.ActualWidth\s*-\s*4\)' 'Set-RowUnavailable must compute the row inner width'
-Assert-Matches $setRowUnavailableText 'if\s*\(\$innerWidth\s*-eq\s*0\)\s*\{\s*\$innerWidth\s*=\s*80\s*\}' 'Set-RowUnavailable must preserve the inner width fallback'
+Assert-NotMatches $setRowUnavailableText '\$innerWidth\b' 'Set-RowUnavailable must not retain dead inner width calculations'
 Assert-Matches $setRowUnavailableText '\$Row\.Fill\.Width\s*=\s*2\b' 'Set-RowUnavailable must render a minimal fill'
 Assert-Matches $setRowUnavailableText '\$Row\.Fill\.Fill\s*=\s*[''"]#475569[''"]' 'Set-RowUnavailable must use the neutral gray fill'
 Assert-Matches $setRowUnavailableText '\$Row\.Value\.Text\s*=\s*[''"]--[''"]' 'Set-RowUnavailable must show the unavailable value literal'
 Assert-Matches $setRowUnavailableText '\$Row\.Value\.Foreground\s*=\s*[''"]#94a3b8[''"]' 'Set-RowUnavailable must use the muted value foreground'
+
+$row = [pscustomobject]@{
+    Battery = [pscustomobject]@{ ActualWidth = 104 }
+    Fill = [pscustomobject]@{ Width = 0; Fill = $null }
+    Value = [pscustomobject]@{ Text = ''; Foreground = $null }
+    Kind = 'short'
+}
+
+Set-RowUnavailable $row
+Assert-Equal 2 $row.Fill.Width 'Unavailable row must use a two-pixel fill'
+Assert-Equal '#475569' $row.Fill.Fill 'Unavailable row must use the neutral gray fill'
+Assert-Equal '--' $row.Value.Text 'Unavailable row must show the unavailable literal'
+Assert-Equal '#94a3b8' $row.Value.Foreground 'Unavailable row must use the muted foreground'
+
+Set-Row $row 67
+Assert-Equal 67 $row.Fill.Width 'Recovered row must calculate fill width from the available percentage'
+Assert-NotMatches ([string]$row.Fill.Fill) '^#475569$' 'Recovered row fill must not remain neutral gray'
+Assert-Equal '67%' $row.Value.Text 'Recovered row must show the available percentage'
+Assert-Equal '#f8fafc' $row.Value.Foreground 'Recovered row must restore the normal foreground'
 
 Assert-Equal '--' (Format-OptionalDuration $null) 'Null reset duration must render as unavailable'
 Assert-Equal (Format-Duration 0) (Format-OptionalDuration 0) 'Zero reset duration must be formatted as an available value'
