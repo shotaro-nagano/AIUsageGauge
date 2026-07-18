@@ -382,6 +382,42 @@ function Get-FillBrush([int]$RemainingPercent, [string]$Kind) {
     return '#22c55e'                                     # 緑 (76%以上: 余裕)
 }
 
+function Convert-CodexRateLimitWindows {
+    param(
+        $PrimaryWindow,
+        $SecondaryWindow
+    )
+
+    $shortRemaining = $null
+    $longRemaining = $null
+    $shortReset = $null
+    $longReset = $null
+
+    foreach ($window in @($PrimaryWindow, $SecondaryWindow)) {
+        if ($null -eq $window) { continue }
+
+        $durationSeconds = [long]$window.limit_window_seconds
+        if ($durationSeconds -le 0) { continue }
+
+        $remaining = Clamp-Percent (100 - [int]$window.used_percent)
+        $reset = [int]$window.reset_after_seconds
+        if ($durationSeconds -le 86400) {
+            $shortRemaining = $remaining
+            $shortReset = $reset
+        } else {
+            $longRemaining = $remaining
+            $longReset = $reset
+        }
+    }
+
+    [pscustomobject]@{
+        ShortRemaining = $shortRemaining
+        LongRemaining = $longRemaining
+        ShortReset = $shortReset
+        LongReset = $longReset
+    }
+}
+
 function Get-CodexUsage {
     if (!(Test-Path -LiteralPath $AuthPath)) {
         throw "Codex auth file was not found: $AuthPath"
@@ -399,14 +435,15 @@ function Get-CodexUsage {
         'User-Agent' = 'AIUsageGauge/0.1'
     }
     $usage = Invoke-RestMethod -Method Get -Uri $UsageUri -Headers $headers -TimeoutSec 20
-    $primaryUsed = [int]$usage.rate_limit.primary_window.used_percent
-    $weeklyUsed = [int]$usage.rate_limit.secondary_window.used_percent
+    $windows = Convert-CodexRateLimitWindows `
+        -PrimaryWindow $usage.rate_limit.primary_window `
+        -SecondaryWindow $usage.rate_limit.secondary_window
 
     [pscustomobject]@{
-        PrimaryRemaining = Clamp-Percent (100 - $primaryUsed)
-        WeeklyRemaining = Clamp-Percent (100 - $weeklyUsed)
-        PrimaryReset = [int]$usage.rate_limit.primary_window.reset_after_seconds
-        WeeklyReset = [int]$usage.rate_limit.secondary_window.reset_after_seconds
+        ShortRemaining = $windows.ShortRemaining
+        LongRemaining = $windows.LongRemaining
+        ShortReset = $windows.ShortReset
+        LongReset = $windows.LongReset
         Allowed = [bool]$usage.rate_limit.allowed
         LimitReached = [bool]$usage.rate_limit.limit_reached
         PlanType = [string]$usage.plan_type
