@@ -373,6 +373,11 @@ function Format-Duration([int]$Seconds) {
     return ('{0}m' -f [Math]::Max(1, [int][Math]::Ceiling($span.TotalMinutes)))
 }
 
+function Format-OptionalDuration($Seconds) {
+    if ($null -eq $Seconds) { return '--' }
+    return (Format-Duration ([int]$Seconds))
+}
+
 function Get-FillBrush([int]$RemainingPercent, [string]$Kind) {
     # 残量パーセントで5段階に色分け (短期/長期 共通)
     if ($RemainingPercent -le 10) { return '#dc2626' }  # 赤 (10%以下: 危険)
@@ -700,6 +705,16 @@ function Set-Row($Row, [int]$Percent) {
     $Row.Fill.Width = [Math]::Max(2, $innerWidth * $Percent / 100)
     $Row.Fill.Fill = Get-FillBrush $Percent $Row.Kind
     $Row.Value.Text = "$Percent%"
+    $Row.Value.Foreground = '#f8fafc'
+}
+
+function Set-RowUnavailable($Row) {
+    $innerWidth = [Math]::Max(0, $Row.Battery.ActualWidth - 4)
+    if ($innerWidth -eq 0) { $innerWidth = 80 }
+    $Row.Fill.Width = 2
+    $Row.Fill.Fill = '#475569'
+    $Row.Value.Text = '--'
+    $Row.Value.Foreground = '#94a3b8'
 }
 
 $window = New-Object System.Windows.Window
@@ -810,11 +825,19 @@ function Update-Usage {
         } else {
             $usage = Get-CodexUsage
             $script:LastCodexUsage = $usage
-            Set-Row $primaryRow $usage.PrimaryRemaining
-            Set-Row $weeklyRow $usage.WeeklyRemaining
-            Notify-IfLowRemaining -Service 'Codex' -Window '5h' -RemainingPercent $usage.PrimaryRemaining
-            Notify-IfLowRemaining -Service 'Codex' -Window 'long' -RemainingPercent $usage.WeeklyRemaining
-            $footer.Text = ('reset {0} / {1}' -f (Format-Duration $usage.PrimaryReset), (Format-Duration $usage.WeeklyReset))
+            if ($null -ne $usage.ShortRemaining) {
+                Set-Row $primaryRow $usage.ShortRemaining
+                Notify-IfLowRemaining -Service 'Codex' -Window '5h' -RemainingPercent $usage.ShortRemaining
+            } else {
+                Set-RowUnavailable $primaryRow
+            }
+            if ($null -ne $usage.LongRemaining) {
+                Set-Row $weeklyRow $usage.LongRemaining
+                Notify-IfLowRemaining -Service 'Codex' -Window 'long' -RemainingPercent $usage.LongRemaining
+            } else {
+                Set-RowUnavailable $weeklyRow
+            }
+            $footer.Text = ('reset {0} / {1}' -f (Format-OptionalDuration $usage.ShortReset), (Format-OptionalDuration $usage.LongReset))
             $footer.ToolTip = Get-LastHealthEventSummary
             if ($usage.LimitReached) {
                 $title.Text = 'Codex rate - capped'
