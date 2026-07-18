@@ -3,6 +3,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$assertionFailures = [System.Collections.Generic.List[string]]::new()
 
 function Assert-Equal {
     param(
@@ -25,6 +26,25 @@ function Assert-Null {
     if ($null -ne $Actual) {
         throw "$Message. Expected: null; Actual: $Actual"
     }
+}
+
+function Assert-Throws {
+    param(
+        [scriptblock]$Action,
+        [string]$ExpectedMessage,
+        [string]$Message
+    )
+
+    try {
+        & $Action
+    } catch {
+        if ($_.Exception.Message -ne $ExpectedMessage) {
+            throw "$Message. Expected exception: $ExpectedMessage; Actual: $($_.Exception.Message)"
+        }
+        return
+    }
+
+    $script:assertionFailures.Add("$Message. Expected exception: $ExpectedMessage") | Out-Null
 }
 
 $startScript = Join-Path $RepoRoot 'Start-AIUsageGauge.ps1'
@@ -80,5 +100,54 @@ Assert-Equal 80 $traditionalPair.ShortRemaining 'Traditional response must map p
 Assert-Equal 60 $traditionalPair.LongRemaining 'Traditional response must map secondary remaining percent to LongRemaining'
 Assert-Equal 1000 $traditionalPair.ShortReset 'Traditional response must map primary reset time to ShortReset'
 Assert-Equal 500000 $traditionalPair.LongReset 'Traditional response must map secondary reset time to LongReset'
+
+$invalidDurationMessage = 'Codex rate limit window must include a positive limit_window_seconds value.'
+$invalidDurationCases = @(
+    [pscustomobject]@{
+        Name = 'Missing duration'
+        Window = @{ used_percent = 10; reset_after_seconds = 100 }
+    }
+    [pscustomobject]@{
+        Name = 'Zero duration'
+        Window = @{ used_percent = 10; limit_window_seconds = 0; reset_after_seconds = 100 }
+    }
+    [pscustomobject]@{
+        Name = 'Negative duration'
+        Window = @{ used_percent = 10; limit_window_seconds = -1; reset_after_seconds = 100 }
+    }
+)
+
+foreach ($case in $invalidDurationCases) {
+    $assertThrowsParams = @{
+        Action = {
+            Convert-CodexRateLimitWindows -PrimaryWindow $case.Window -SecondaryWindow $null | Out-Null
+        }
+        ExpectedMessage = $invalidDurationMessage
+        Message = "$($case.Name) must be rejected"
+    }
+    Assert-Throws @assertThrowsParams
+}
+
+$shortBoundary = Convert-CodexRateLimitWindows -PrimaryWindow @{
+    used_percent = 25
+    limit_window_seconds = 86400
+    reset_after_seconds = 100
+} -SecondaryWindow $null
+
+Assert-Equal 75 $shortBoundary.ShortRemaining 'Exactly 86400 seconds must map to ShortRemaining'
+Assert-Null $shortBoundary.LongRemaining 'Exactly 86400 seconds must not populate LongRemaining'
+
+$longBoundary = Convert-CodexRateLimitWindows -PrimaryWindow @{
+    used_percent = 25
+    limit_window_seconds = 86401
+    reset_after_seconds = 100
+} -SecondaryWindow $null
+
+Assert-Null $longBoundary.ShortRemaining 'Exactly 86401 seconds must not populate ShortRemaining'
+Assert-Equal 75 $longBoundary.LongRemaining 'Exactly 86401 seconds must map to LongRemaining'
+
+if ($assertionFailures.Count -gt 0) {
+    throw ($assertionFailures -join [Environment]::NewLine)
+}
 
 Write-Host 'Codex window mapping tests passed'

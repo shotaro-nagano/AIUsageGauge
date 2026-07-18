@@ -397,7 +397,9 @@ function Convert-CodexRateLimitWindows {
         if ($null -eq $window) { continue }
 
         $durationSeconds = [long]$window.limit_window_seconds
-        if ($durationSeconds -le 0) { continue }
+        if ($durationSeconds -le 0) {
+            throw 'Codex rate limit window must include a positive limit_window_seconds value.'
+        }
 
         $remaining = Clamp-Percent (100 - [int]$window.used_percent)
         $reset = [int]$window.reset_after_seconds
