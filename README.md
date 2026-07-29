@@ -119,6 +119,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\Install-AIUsageGauge.ps1
 
 `LogRetentionDays` は `2` が既定です。ローカル日付で今日と前日分の `events.log` だけを残し、それより古い行は次回ログ書き込み時に削除します。
 
+`HeartbeatConfirmationSeconds` は設定値として10秒ですが、実際の確認待ちは正常な30秒 heartbeat を1回以上待てるよう、`HealthHeartbeatSeconds + 5秒`（既定35秒）より短くなりません。
+
 ## Claude OAuth 自動更新
 
 Claude Code の標準 CLI は、OAuth アクセストークンの有効期限が十分残っている間は `.credentials.json` を更新しません。確認した Claude Code 2.1.149 では、残り時間が短いときだけ CLI 内部の refresh が動く挙動でした。

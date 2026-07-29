@@ -25,6 +25,10 @@ function New-DefaultAIUsageGaugeSettings {
         StaleAfterMinutes = 5
         LogRetentionDays = 2
         PersistWindowPosition = $true
+        HealthHeartbeatSeconds = 30
+        HealthStaleMinutes = 10
+        HeartbeatConfirmationSeconds = 10
+        ScreenMargin = 6
         PackageName = 'AI-Usage-Gauge'
     }
 }
@@ -34,6 +38,9 @@ function Get-AIUsageGaugeSettings {
     try {
         if (Test-Path -LiteralPath $SettingsPath) {
             $loaded = Get-Content -LiteralPath $SettingsPath -Raw | ConvertFrom-Json
+            if ($loaded -isnot [System.Management.Automation.PSCustomObject]) {
+                throw 'settings.json root must be an object.'
+            }
             foreach ($property in $loaded.PSObject.Properties) {
                 if ($settings.PSObject.Properties.Name -contains $property.Name) {
                     $settings.$($property.Name) = $property.Value

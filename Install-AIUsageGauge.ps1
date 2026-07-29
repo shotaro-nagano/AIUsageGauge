@@ -44,6 +44,19 @@ function New-AIUsageGaugeShortcut {
     $shortcut.Save()
 }
 
+function Write-SettingsJsonAtomically {
+    param($Settings)
+
+    $tempPath = "$settingsPath.$PID.tmp"
+    try {
+        $Settings | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $tempPath -Encoding UTF8
+        [System.IO.File]::Move($tempPath, $settingsPath, $true)
+    } catch {
+        Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+
 function Ensure-SettingsFile {
     $defaults = [ordered]@{
         RefreshSeconds = 180
@@ -64,12 +77,15 @@ function Ensure-SettingsFile {
     }
 
     if (!(Test-Path -LiteralPath $settingsPath)) {
-        $defaults | ConvertTo-Json | Set-Content -LiteralPath $settingsPath -Encoding UTF8
+        Write-SettingsJsonAtomically -Settings ([pscustomobject]$defaults)
         return
     }
 
     try {
         $settings = Get-Content -Raw -LiteralPath $settingsPath | ConvertFrom-Json
+        if ($settings -isnot [System.Management.Automation.PSCustomObject]) {
+            throw 'settings.json root must be an object.'
+        }
         $changed = $false
         foreach ($entry in $defaults.GetEnumerator()) {
             if ($null -eq $settings.PSObject.Properties[$entry.Key]) {
@@ -78,7 +94,7 @@ function Ensure-SettingsFile {
             }
         }
         if ($changed) {
-            $settings | ConvertTo-Json | Set-Content -LiteralPath $settingsPath -Encoding UTF8
+            Write-SettingsJsonAtomically -Settings $settings
         }
     } catch {
         throw "settings.json is malformed. Existing settings were not changed."

@@ -109,16 +109,18 @@ function Get-RecentEvents {
     foreach ($line in (Get-Content -LiteralPath $EventLogPath -Tail $Count -ErrorAction SilentlyContinue)) {
         try {
             $event = $line | ConvertFrom-Json
-            $sensitiveNamePattern = (@('token', ('author' + 'ization'), 'secret') -join '|')
-            foreach ($name in @($event.PSObject.Properties.Name)) {
-                if ($name -match $sensitiveNamePattern) {
-                    $event.PSObject.Properties.Remove($name)
-                }
+            if ($event -isnot [System.Management.Automation.PSCustomObject]) {
+                throw 'Event root must be an object.'
             }
-            $events += $event
-        } catch {
-            $events += [pscustomobject]@{ raw = $line }
-        }
+            $eventName = [string]$event.event
+            if ($eventName -notmatch '^[a-z0-9_]{1,80}$') {
+                throw 'Invalid event name.'
+            }
+            $events += [pscustomobject]@{
+                Timestamp = Convert-GaugeHealthTimestamp -Value $event.timestamp
+                Event = $eventName
+            }
+        } catch {}
     }
     return $events
 }
@@ -147,11 +149,12 @@ function Get-LastHealthEventSummary {
             try {
                 $event = $line | ConvertFrom-Json
                 if ($eventNames -contains [string]$event.event) {
+                    $timestamp = Convert-GaugeHealthTimestamp -Value $event.timestamp
                     return [pscustomobject]@{
                         Found = $true
                         Event = [string]$event.event
-                        Timestamp = [string]$event.timestamp
-                        Summary = ('health: {0} at {1}' -f $event.event, $event.timestamp)
+                        Timestamp = $timestamp
+                        Summary = ('health: {0} at {1}' -f $event.event, $timestamp)
                     }
                 }
             } catch {}
@@ -161,13 +164,55 @@ function Get-LastHealthEventSummary {
     [pscustomobject]@{ Found = $false; Event = $null; Timestamp = $null; Summary = 'health: no recent repair events' }
 }
 
+function Convert-GaugeHealthTimestamp {
+    param(
+        $Value,
+        [switch]$AllowNull
+    )
+
+    if ($null -eq $Value) {
+        if ($AllowNull) { return $null }
+        throw 'Timestamp is required.'
+    }
+    if ($Value -is [DateTimeOffset]) {
+        return $Value.ToUniversalTime().ToString('o')
+    }
+    if ($Value -is [DateTime]) {
+        return ([DateTimeOffset]$Value).ToUniversalTime().ToString('o')
+    }
+    if ($Value -isnot [string] -or [string]::IsNullOrWhiteSpace($Value)) {
+        throw 'Timestamp must be a date or non-empty string.'
+    }
+
+    $parsed = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse(
+        $Value,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind,
+        [ref]$parsed
+    )) {
+        throw 'Timestamp is malformed.'
+    }
+    $parsed.ToUniversalTime().ToString('o')
+}
+
 function Convert-GaugeServiceHealthStatus {
     param($Service)
 
-    if ($null -eq $Service) { return $null }
+    if ($Service -isnot [System.Management.Automation.PSCustomObject]) {
+        throw 'Service health must be an object.'
+    }
+    $status = [string]$Service.status
+    if ($Service.status -isnot [string] -or $status -notin @('starting', 'ok', 'off', 'auth', 'rate_limited', 'unavailable')) {
+        throw 'Service health status is invalid.'
+    }
+    $lastSuccessAt = Convert-GaugeHealthTimestamp -Value $Service.lastSuccessAt -AllowNull
+    if ($status -eq 'ok' -and $null -eq $lastSuccessAt) {
+        throw 'Successful service health requires a timestamp.'
+    }
     [pscustomobject]@{
-        Status = [string]$Service.status
-        LastSuccessAt = if ($null -eq $Service.lastSuccessAt) { $null } else { [string]$Service.lastSuccessAt }
+        Status = $status
+        LastSuccessAt = $lastSuccessAt
     }
 }
 
@@ -190,21 +235,34 @@ function Get-GaugeHealthStatus {
 
     try {
         $health = Get-Content -Raw -LiteralPath $HealthStatePath | ConvertFrom-Json
-        $processId = 0
-        if (-not [int]::TryParse([string]$health.pid, [ref]$processId)) {
+        if ($health -isnot [System.Management.Automation.PSCustomObject]) {
+            throw 'Health root must be an object.'
+        }
+        $integerTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64], [uint64])
+        if (-not ($integerTypes | Where-Object { $health.schemaVersion -is $_ }) -or [int64]$health.schemaVersion -ne 1) {
+            throw 'Unsupported health schema.'
+        }
+        if (-not ($integerTypes | Where-Object { $health.pid -is $_ }) -or [int64]$health.pid -le 0 -or [int64]$health.pid -gt [int]::MaxValue) {
             throw 'Invalid process id.'
         }
+        $processId = [int]$health.pid
+        $processStartedAt = Convert-GaugeHealthTimestamp -Value $health.processStartedAt
+        $uiHeartbeatAt = Convert-GaugeHealthTimestamp -Value $health.uiHeartbeatAt
+        $lastUpdateAttemptAt = Convert-GaugeHealthTimestamp -Value $health.lastUpdateAttemptAt -AllowNull
+        $lastScreenCorrectionAt = Convert-GaugeHealthTimestamp -Value $health.lastScreenCorrectionAt -AllowNull
+        $codex = Convert-GaugeServiceHealthStatus $health.codex
+        $claude = Convert-GaugeServiceHealthStatus $health.claude
 
         [pscustomobject]@{
             Available = $true
             State = 'available'
             ProcessId = $processId
-            ProcessStartedAt = [string]$health.processStartedAt
-            UiHeartbeatAt = [string]$health.uiHeartbeatAt
-            LastUpdateAttemptAt = if ($null -eq $health.lastUpdateAttemptAt) { $null } else { [string]$health.lastUpdateAttemptAt }
-            Codex = Convert-GaugeServiceHealthStatus $health.codex
-            Claude = Convert-GaugeServiceHealthStatus $health.claude
-            LastScreenCorrectionAt = if ($null -eq $health.lastScreenCorrectionAt) { $null } else { [string]$health.lastScreenCorrectionAt }
+            ProcessStartedAt = $processStartedAt
+            UiHeartbeatAt = $uiHeartbeatAt
+            LastUpdateAttemptAt = $lastUpdateAttemptAt
+            Codex = $codex
+            Claude = $claude
+            LastScreenCorrectionAt = $lastScreenCorrectionAt
         }
     } catch {
         $empty.State = 'malformed'
