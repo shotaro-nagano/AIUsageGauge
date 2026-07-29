@@ -107,6 +107,29 @@ Assert-True (($removedMonitor.Left + 142) -le ($primaryArea.Right - 6)) 'The cor
 Assert-True ($removedMonitor.Top -ge ($primaryArea.Top + 6)) 'The corrected window top edge must include the screen margin'
 Assert-True (($removedMonitor.Top + 132) -le ($primaryArea.Bottom - 6)) 'The corrected full window height must remain inside the selected working area'
 
+$nanArea = [pscustomobject]@{
+    Left = [double]::NaN
+    Top = 0
+    Right = 100
+    Bottom = 100
+}
+$extremeOffset = ConvertTo-VisibleGaugePosition -Left 1e200 -Top 1e200 -Width 142 -Height 132 -WorkingAreas @($nanArea, $leftArea, $primaryArea) -Margin 6
+Assert-True $extremeOffset.Corrected 'A finite extreme offset must select a valid working area and report correction'
+Assert-True (-not [double]::IsNaN($extremeOffset.Left) -and -not [double]::IsInfinity($extremeOffset.Left)) 'An extreme horizontal offset must clamp to a finite coordinate'
+Assert-True (-not [double]::IsNaN($extremeOffset.Top) -and -not [double]::IsInfinity($extremeOffset.Top)) 'An extreme vertical offset must clamp to a finite coordinate'
+$extremeFitsWorkingArea = $false
+foreach ($area in @($leftArea, $primaryArea)) {
+    if (
+        $extremeOffset.Left -ge ($area.Left + 6) -and
+        ($extremeOffset.Left + 142) -le ($area.Right - 6) -and
+        $extremeOffset.Top -ge ($area.Top + 6) -and
+        ($extremeOffset.Top + 132) -le ($area.Bottom - 6)
+    ) {
+        $extremeFitsWorkingArea = $true
+    }
+}
+Assert-True $extremeFitsWorkingArea 'The full window at an extreme finite offset must clamp inside a valid working area'
+
 $emptyAreas = ConvertTo-VisibleGaugePosition -Left 321 -Top -654 -Width 142 -Height 132 -WorkingAreas @() -Margin 6
 Assert-Equal 321 $emptyAreas.Left 'An empty working-area list must preserve the original left coordinate'
 Assert-Equal -654 $emptyAreas.Top 'An empty working-area list must preserve the original top coordinate'

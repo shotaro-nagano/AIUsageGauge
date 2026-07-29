@@ -656,20 +656,43 @@ function ConvertTo-VisibleGaugePosition {
     $desiredCenterX = $Left + ($Width / 2)
     $desiredCenterY = $Top + ($Height / 2)
     $selectedArea = $null
-    $minimumDistanceSquared = [double]::PositiveInfinity
+    $minimumDistance = [double]::PositiveInfinity
 
     foreach ($area in $areas) {
-        $areaLeft = [Math]::Min([double]$area.Left, [double]$area.Right)
-        $areaTop = [Math]::Min([double]$area.Top, [double]$area.Bottom)
-        $areaRight = [Math]::Max([double]$area.Left, [double]$area.Right)
-        $areaBottom = [Math]::Max([double]$area.Top, [double]$area.Bottom)
+        try {
+            $rawAreaLeft = [double]$area.Left
+            $rawAreaTop = [double]$area.Top
+            $rawAreaRight = [double]$area.Right
+            $rawAreaBottom = [double]$area.Bottom
+        } catch {
+            continue
+        }
+
+        if (
+            [double]::IsNaN($rawAreaLeft) -or [double]::IsInfinity($rawAreaLeft) -or
+            [double]::IsNaN($rawAreaTop) -or [double]::IsInfinity($rawAreaTop) -or
+            [double]::IsNaN($rawAreaRight) -or [double]::IsInfinity($rawAreaRight) -or
+            [double]::IsNaN($rawAreaBottom) -or [double]::IsInfinity($rawAreaBottom)
+        ) {
+            continue
+        }
+
+        $areaLeft = [Math]::Min($rawAreaLeft, $rawAreaRight)
+        $areaTop = [Math]::Min($rawAreaTop, $rawAreaBottom)
+        $areaRight = [Math]::Max($rawAreaLeft, $rawAreaRight)
+        $areaBottom = [Math]::Max($rawAreaTop, $rawAreaBottom)
         $nearestX = [Math]::Max($areaLeft, [Math]::Min($desiredCenterX, $areaRight))
         $nearestY = [Math]::Max($areaTop, [Math]::Min($desiredCenterY, $areaBottom))
-        $distanceSquared = [Math]::Pow($desiredCenterX - $nearestX, 2) +
-            [Math]::Pow($desiredCenterY - $nearestY, 2)
+        $distance = [Math]::Max(
+            [Math]::Abs($desiredCenterX - $nearestX),
+            [Math]::Abs($desiredCenterY - $nearestY)
+        )
+        if ([double]::IsNaN($distance)) {
+            $distance = [double]::PositiveInfinity
+        }
 
-        if ($distanceSquared -lt $minimumDistanceSquared) {
-            $minimumDistanceSquared = $distanceSquared
+        if ($null -eq $selectedArea -or $distance -lt $minimumDistance) {
+            $minimumDistance = $distance
             $selectedArea = [pscustomobject]@{
                 Left = $areaLeft
                 Top = $areaTop
