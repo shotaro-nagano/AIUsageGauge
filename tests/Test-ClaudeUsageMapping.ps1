@@ -46,6 +46,21 @@ function Assert-Throws {
     throw "$Message. Expected exception: $ExpectedMessage"
 }
 
+function Assert-ThrowsAny {
+    param(
+        [scriptblock]$Action,
+        [string]$Message
+    )
+
+    try {
+        & $Action
+    } catch {
+        return
+    }
+
+    throw "$Message. Expected an exception."
+}
+
 $startScript = Join-Path $RepoRoot 'Start-AIUsageGauge.ps1'
 $tokens = $null
 $parseErrors = $null
@@ -137,6 +152,16 @@ Assert-Null $missingValues.FableRemaining 'null Fable percent'
 Assert-Equal 2 (Convert-ClaudeResetToSeconds '2026-07-29T03:20:01.001Z' $now) 'reset seconds must round up'
 Assert-Equal 0 (Convert-ClaudeResetToSeconds '2026-07-29T03:19:59Z' $now) 'past reset must clamp to zero'
 Assert-Null (Convert-ClaudeResetToSeconds $null $now) 'missing reset must remain null'
+
+$invalidResetCases = @(
+    [pscustomobject]@{ Name = 'Empty'; Value = '' }
+    [pscustomobject]@{ Name = 'Whitespace'; Value = '   ' }
+)
+foreach ($case in $invalidResetCases) {
+    Assert-ThrowsAny {
+        Convert-ClaudeResetToSeconds $case.Value $now | Out-Null
+    } "$($case.Name) reset timestamp must be rejected"
+}
 
 $invalidQuotaCases = @(
     [pscustomobject]@{

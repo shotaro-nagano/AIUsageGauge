@@ -518,9 +518,7 @@ function Invoke-ClaudeTokenRefresh($Creds) {
 function Convert-ClaudeResetToSeconds {
     param($ResetAt, [DateTimeOffset]$Now = [DateTimeOffset]::UtcNow)
 
-    if ($null -eq $ResetAt -or [string]::IsNullOrWhiteSpace([string]$ResetAt)) {
-        return $null
-    }
+    if ($null -eq $ResetAt) { return $null }
 
     $reset = [DateTimeOffset]::Parse([string]$ResetAt)
     return [Math]::Max(0, [int][Math]::Ceiling(($reset - $Now).TotalSeconds))
