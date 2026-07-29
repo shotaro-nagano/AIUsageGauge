@@ -169,7 +169,7 @@ function Test-GaugeProcessCommandLine {
     }
 
     for ($index = 1; $index -lt $arguments.Count; $index++) {
-        if ($arguments[$index] -ieq '-Command') {
+        if ($arguments[$index] -iin @('-Command', '-c', '-EncodedCommand', '-enc')) {
             return $false
         }
         if ($arguments[$index] -ine '-File') {
@@ -208,6 +208,12 @@ function Get-GaugeHeartbeatStatus {
         return 'missing'
     }
 
+    $schemaVersion = 0
+    if (-not [int]::TryParse([string]$HealthState.schemaVersion, [ref]$schemaVersion) -or
+        $schemaVersion -ne 1) {
+        return 'malformed'
+    }
+
     $processId = 0
     $healthPid = 0
     if ($null -eq $Process -or
@@ -225,6 +231,15 @@ function Get-GaugeHeartbeatStatus {
     if (-not [DateTimeOffset]::TryParse([string]$Process.CreationDate, [ref]$created)) {
         return 'malformed'
     }
+
+    $healthStartedAt = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse([string]$HealthState.processStartedAt, [ref]$healthStartedAt)) {
+        return 'malformed'
+    }
+    if ([Math]::Abs(($created - $healthStartedAt).TotalSeconds) -gt 2) {
+        return 'pid_mismatch'
+    }
+
     if (($Now - $created).TotalMinutes -lt $StartupGraceMinutes) {
         return 'startup_grace'
     }
@@ -284,9 +299,48 @@ function Start-GaugeHidden {
     return $started
 }
 
+function Stop-VerifiedGaugeProcess {
+    param(
+        [int]$ProcessId,
+        [DateTimeOffset]$ExpectedProcessStartedAt
+    )
+
+    if ($ProcessId -le 0) {
+        Write-WatchdogEvent 'watchdog_stale_revalidation_failed' @{ reason = 'invalid_pid' }
+        return 'rejected'
+    }
+
+    $verifiedProcess = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $ProcessId) -ErrorAction SilentlyContinue
+    if ($null -eq $verifiedProcess) {
+        Write-WatchdogEvent 'watchdog_stale_process_exited' @{ processId = $ProcessId; reason = 'stop_revalidation_exit' }
+        return 'exited'
+    }
+    if ([int]$verifiedProcess.ProcessId -ne $ProcessId) {
+        Write-WatchdogEvent 'watchdog_stale_revalidation_failed' @{ processId = $ProcessId; reason = 'stop_revalidation_pid' }
+        return 'rejected'
+    }
+
+    $verifiedStartedAt = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse([string]$verifiedProcess.CreationDate, [ref]$verifiedStartedAt) -or
+        [Math]::Abs(($verifiedStartedAt - $ExpectedProcessStartedAt).TotalSeconds) -gt 2) {
+        Write-WatchdogEvent 'watchdog_stale_revalidation_failed' @{ processId = $ProcessId; reason = 'stop_revalidation_start' }
+        return 'rejected'
+    }
+    if (-not (Test-GaugeProcessCommandLine ([string]$verifiedProcess.CommandLine))) {
+        Write-WatchdogEvent 'watchdog_stale_revalidation_failed' @{ processId = $ProcessId; reason = 'stop_revalidation_command' }
+        return 'rejected'
+    }
+
+    Write-WatchdogEvent 'watchdog_stale_stop_confirmed' @{ processId = $ProcessId; reason = 'stale' }
+    Stop-Process -Id $ProcessId -ErrorAction Stop
+    Wait-Process -Id $ProcessId -Timeout 10 -ErrorAction SilentlyContinue
+    return 'stopped'
+}
+
 function Invoke-ConfirmedGaugeRecovery {
     param(
         [int]$ProcessId,
+        [DateTimeOffset]$ExpectedProcessStartedAt,
         [int]$StaleMinutes,
         [int]$StartupGraceMinutes = 2,
         [int]$ConfirmationSeconds = 10
@@ -307,6 +361,13 @@ function Invoke-ConfirmedGaugeRecovery {
     if ([int]$confirmationProcess.ProcessId -ne $ProcessId -or
         -not (Test-GaugeProcessCommandLine ([string]$confirmationProcess.CommandLine))) {
         Write-WatchdogEvent 'watchdog_stale_revalidation_failed' @{ processId = $ProcessId; reason = 'confirmation_command' }
+        return
+    }
+
+    $confirmationStartedAt = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse([string]$confirmationProcess.CreationDate, [ref]$confirmationStartedAt) -or
+        [Math]::Abs(($confirmationStartedAt - $ExpectedProcessStartedAt).TotalSeconds) -gt 2) {
+        Write-WatchdogEvent 'watchdog_stale_revalidation_failed' @{ processId = $ProcessId; reason = 'confirmation_start' }
         return
     }
 
@@ -334,6 +395,13 @@ function Invoke-ConfirmedGaugeRecovery {
         return
     }
 
+    $finalStartedAt = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse([string]$verifiedProcess.CreationDate, [ref]$finalStartedAt) -or
+        [Math]::Abs(($finalStartedAt - $ExpectedProcessStartedAt).TotalSeconds) -gt 2) {
+        Write-WatchdogEvent 'watchdog_stale_revalidation_failed' @{ processId = $ProcessId; reason = 'final_start' }
+        return
+    }
+
     $finalHealth = Read-GaugeHealthState
     $finalStatus = Get-GaugeHeartbeatStatus `
         -Process $verifiedProcess `
@@ -346,15 +414,12 @@ function Invoke-ConfirmedGaugeRecovery {
         Write-Status ('gauge_recovered:{0}:{1}' -f $ProcessId, $finalStatus)
         return
     }
-    if (-not (Test-GaugeProcessCommandLine ([string]$verifiedProcess.CommandLine))) {
-        Write-WatchdogEvent 'watchdog_stale_revalidation_failed' @{ processId = $ProcessId; reason = 'final_command' }
-        return
+    $stopResult = Stop-VerifiedGaugeProcess `
+        -ProcessId $ProcessId `
+        -ExpectedProcessStartedAt $ExpectedProcessStartedAt
+    if ($stopResult -in @('stopped', 'exited')) {
+        Start-GaugeHidden | Out-Null
     }
-
-    Write-WatchdogEvent 'watchdog_stale_stop_confirmed' @{ processId = $ProcessId; reason = 'stale' }
-    Stop-Process -Id $ProcessId -ErrorAction Stop
-    Wait-Process -Id $ProcessId -Timeout 10 -ErrorAction SilentlyContinue
-    Start-GaugeHidden | Out-Null
 }
 
 function Ensure-GaugeRunning {
@@ -380,8 +445,15 @@ function Ensure-GaugeRunning {
             continue
         }
 
+        $expectedProcessStartedAt = [DateTimeOffset]::MinValue
+        if (-not [DateTimeOffset]::TryParse([string]$process.CreationDate, [ref]$expectedProcessStartedAt)) {
+            Write-WatchdogEvent 'watchdog_heartbeat_status' @{ processId = [int]$process.ProcessId; reason = 'malformed' }
+            continue
+        }
+
         Invoke-ConfirmedGaugeRecovery `
             -ProcessId ([int]$process.ProcessId) `
+            -ExpectedProcessStartedAt $expectedProcessStartedAt `
             -StaleMinutes $recoverySettings.HealthStaleMinutes `
             -StartupGraceMinutes 2 `
             -ConfirmationSeconds $recoverySettings.HeartbeatConfirmationSeconds

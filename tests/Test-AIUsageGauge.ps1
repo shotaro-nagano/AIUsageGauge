@@ -101,6 +101,7 @@ $healthStateTable = $healthStateAssignment.Right.Find({
     $ast -is [System.Management.Automation.Language.HashtableAst]
 }, $true)
 Assert-True ($null -ne $healthStateTable) 'Gauge health state must be a fixed hashtable'
+$healthStateInitializationText = $healthStateAssignment.Extent.Text
 $healthStateKeys = @($healthStateTable.KeyValuePairs | ForEach-Object { $_.Item1.Value })
 $expectedHealthStateKeys = @(
     'schemaVersion'
@@ -116,6 +117,7 @@ Assert-True ($healthStateKeys.Count -eq $expectedHealthStateKeys.Count) 'Gauge h
 foreach ($healthStateKey in $expectedHealthStateKeys) {
     Assert-True ($healthStateKeys -contains $healthStateKey) "Gauge health state is missing $healthStateKey"
 }
+Assert-True ($healthStateInitializationText -match 'processStartedAt\s*=\s*\(\[DateTimeOffset\]::new\(\$currentGaugeProcess\.StartTime\)\)\.ToUniversalTime\(\)') 'Gauge health processStartedAt must use the actual current process StartTime in UTC'
 
 $watchdogTokens = $null
 $watchdogParseErrors = $null
@@ -135,10 +137,17 @@ $confirmedRecoveryAst = $watchdogAst.Find({
     $ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
         $ast.Name -eq 'Invoke-ConfirmedGaugeRecovery'
 }, $true)
+$stopVerifiedAst = $watchdogAst.Find({
+    param($ast)
+    $ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $ast.Name -eq 'Stop-VerifiedGaugeProcess'
+}, $true)
 Assert-True ($null -ne $getGaugeProcessesAst) 'Get-GaugeProcesses function is missing'
 Assert-True ($null -ne $confirmedRecoveryAst) 'Invoke-ConfirmedGaugeRecovery function is missing'
+Assert-True ($null -ne $stopVerifiedAst) 'Stop-VerifiedGaugeProcess function is missing'
 $getGaugeProcessesText = $getGaugeProcessesAst.Extent.Text
 $confirmedRecoveryText = $confirmedRecoveryAst.Extent.Text
+$stopVerifiedText = $stopVerifiedAst.Extent.Text
 
 Assert-True ($start -match 'Global\\AIUsageGauge') 'Start script must create a named mutex'
 Assert-True ($start -match '再ログイン要') 'Expired Claude auth must show a relogin-required label'
@@ -275,14 +284,20 @@ $watchdogStopCommands = @($watchdogAst.FindAll({
 Assert-True ($watchdogStopCommands.Count -eq 1) 'Watchdog must have exactly one confirmed Stop-Process call'
 Assert-True ($watchdogStopCommands[0].Extent.Text -match '^Stop-Process\s+-Id\s+\$ProcessId(?:\s|$)') 'Watchdog must stop only the exact confirmed ProcessId'
 Assert-True ($watchdogStopCommands[0].Extent.Text -notmatch '-Name\b') 'Watchdog must never stop all PowerShell processes by name'
+Assert-True ($watchdogStopCommands[0].Extent.StartOffset -gt $stopVerifiedAst.Extent.StartOffset -and
+    $watchdogStopCommands[0].Extent.EndOffset -lt $stopVerifiedAst.Extent.EndOffset) 'The sole Stop-Process call must be isolated in Stop-VerifiedGaugeProcess'
 $healthRereadIndex = $confirmedRecoveryText.LastIndexOf('Read-GaugeHealthState')
-$freshCimIndex = $confirmedRecoveryText.LastIndexOf('Get-CimInstance Win32_Process')
-$pidEqualityIndex = $confirmedRecoveryText.LastIndexOf('$verifiedProcess.ProcessId')
-$commandRevalidationIndex = $confirmedRecoveryText.LastIndexOf('Test-GaugeProcessCommandLine')
-$confirmedStopIndex = $confirmedRecoveryText.IndexOf('Stop-Process')
-Assert-True ($healthRereadIndex -ge 0 -and $healthRereadIndex -lt $confirmedStopIndex) 'Confirmation must reread health before stopping'
+$stopInvocationIndex = $confirmedRecoveryText.LastIndexOf('Stop-VerifiedGaugeProcess')
+Assert-True ($healthRereadIndex -ge 0 -and $healthRereadIndex -lt $stopInvocationIndex) 'Confirmation must reread health before final stop verification'
+$freshCimIndex = $stopVerifiedText.IndexOf('Get-CimInstance Win32_Process')
+$pidEqualityIndex = $stopVerifiedText.IndexOf('$verifiedProcess.ProcessId')
+$creationDateIndex = $stopVerifiedText.IndexOf('$verifiedProcess.CreationDate')
+$startToleranceIndex = $stopVerifiedText.IndexOf('TotalSeconds')
+$commandRevalidationIndex = $stopVerifiedText.IndexOf('Test-GaugeProcessCommandLine')
+$confirmedStopIndex = $stopVerifiedText.IndexOf('Stop-Process')
 Assert-True ($freshCimIndex -ge 0 -and $freshCimIndex -lt $pidEqualityIndex) 'Final recovery must freshly query Win32_Process by exact PID'
-Assert-True ($pidEqualityIndex -lt $commandRevalidationIndex -and $commandRevalidationIndex -lt $confirmedStopIndex) 'Final recovery must verify returned PID and command line before stopping'
+Assert-True ($pidEqualityIndex -lt $creationDateIndex -and $creationDateIndex -lt $startToleranceIndex -and $startToleranceIndex -lt $confirmedStopIndex) 'Final recovery must verify the expected process start time before stopping'
+Assert-True ($commandRevalidationIndex -gt $freshCimIndex -and $commandRevalidationIndex -lt $confirmedStopIndex) 'Final recovery must revalidate the command line before stopping'
 Assert-True ($watchdog -match 'Write-WatchdogEvent') 'Watchdog must write token-free diagnostic events'
 Assert-True ($watchdog -match 'Limit-WatchdogEventLog') 'Watchdog must rotate diagnostic logs'
 Assert-True ($watchdog -match 'LogRetentionDays') 'Watchdog log rotation must use day-based retention'
