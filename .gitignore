@@ -1,6 +1,7 @@
 # Never commit local Codex state, auth, logs, caches, or copied pet assets.
 .codex/
 .claude/
+.superpowers/
 auth.json
 .credentials.json
 .env
