@@ -197,8 +197,25 @@ function Test-GaugeProcessCommandLine {
             if ($isExecutionSelector) {
                 return $false
             }
+
+            $isFileSelector = 'File'.StartsWith($optionName, [StringComparison]::OrdinalIgnoreCase)
+            if ($isFileSelector -and $arguments[$index] -ine '-File') {
+                return $false
+            }
         }
         if ($arguments[$index] -ine '-File') {
+            $positionalArgument = $arguments[$index]
+            if (($positionalArgument.StartsWith('"') -and $positionalArgument.EndsWith('"')) -or
+                ($positionalArgument.StartsWith("'") -and $positionalArgument.EndsWith("'"))) {
+                $positionalArgument = $positionalArgument.Substring(1, $positionalArgument.Length - 2)
+            }
+            try {
+                if ([System.IO.Path]::GetExtension($positionalArgument) -ieq '.ps1') {
+                    return $false
+                }
+            } catch {
+                return $false
+            }
             continue
         }
         if ($index + 1 -ge $arguments.Count) {
