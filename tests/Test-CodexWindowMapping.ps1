@@ -166,12 +166,19 @@ Assert-Equal ([int]) $zeroValues.ShortReset.GetType() 'Zero reset_after_seconds 
 $setRowText = $functionDefinitions['Set-Row'].Extent.Text
 $setRowUnavailableText = $functionDefinitions['Set-RowUnavailable'].Extent.Text
 
-Assert-Matches $setRowText '\$Row\.Value\.Foreground\s*=\s*[''"]#f8fafc[''"]' 'Set-Row must restore the available value foreground'
+Assert-Equal '#cf5d63' (Get-FillBrush 10 'Codex') 'Ten percent must use the muted danger color'
+Assert-Equal '#c97a55' (Get-FillBrush 25 'Codex') 'Twenty-five percent must use the muted warning color'
+Assert-Equal '#c2a35c' (Get-FillBrush 50 'Codex') 'Fifty percent must use the muted caution color'
+Assert-Equal '#94a56d' (Get-FillBrush 75 'Codex') 'Seventy-five percent must use the muted good color'
+Assert-Equal '#84a98c' (Get-FillBrush 76 'Codex') 'Healthy Codex rows must use green'
+Assert-Equal '#c59a72' (Get-FillBrush 76 'Claude') 'Healthy Claude rows must use bronze'
+
+Assert-Matches $setRowText '\$Row\.Value\.Foreground\s*=\s*[''"]#d8dde5[''"]' 'Set-Row must restore the Graphite primary foreground'
 Assert-NotMatches $setRowUnavailableText '\$innerWidth\b' 'Set-RowUnavailable must not retain dead inner width calculations'
 Assert-Matches $setRowUnavailableText '\$Row\.Fill\.Width\s*=\s*2\b' 'Set-RowUnavailable must render a minimal fill'
-Assert-Matches $setRowUnavailableText '\$Row\.Fill\.Fill\s*=\s*[''"]#475569[''"]' 'Set-RowUnavailable must use the neutral gray fill'
+Assert-Matches $setRowUnavailableText '\$Row\.Fill\.Fill\s*=\s*[''"]#3c424c[''"]' 'Set-RowUnavailable must use the Graphite neutral fill'
 Assert-Matches $setRowUnavailableText '\$Row\.Value\.Text\s*=\s*[''"]--[''"]' 'Set-RowUnavailable must show the unavailable value literal'
-Assert-Matches $setRowUnavailableText '\$Row\.Value\.Foreground\s*=\s*[''"]#94a3b8[''"]' 'Set-RowUnavailable must use the muted value foreground'
+Assert-Matches $setRowUnavailableText '\$Row\.Value\.Foreground\s*=\s*[''"]#aeb7c4[''"]' 'Set-RowUnavailable must use the Graphite secondary foreground'
 
 $row = [pscustomobject]@{
     Battery = [pscustomobject]@{ ActualWidth = 104 }
@@ -182,15 +189,15 @@ $row = [pscustomobject]@{
 
 Set-RowUnavailable $row
 Assert-Equal 2 $row.Fill.Width 'Unavailable row must use a two-pixel fill'
-Assert-Equal '#475569' $row.Fill.Fill 'Unavailable row must use the neutral gray fill'
+Assert-Equal '#3c424c' $row.Fill.Fill 'Unavailable row must use the Graphite neutral fill'
 Assert-Equal '--' $row.Value.Text 'Unavailable row must show the unavailable literal'
-Assert-Equal '#94a3b8' $row.Value.Foreground 'Unavailable row must use the muted foreground'
+Assert-Equal '#aeb7c4' $row.Value.Foreground 'Unavailable row must use the Graphite secondary foreground'
 
 Set-Row $row 67
 Assert-Equal 67 $row.Fill.Width 'Recovered row must calculate fill width from the available percentage'
-Assert-NotMatches ([string]$row.Fill.Fill) '^#475569$' 'Recovered row fill must not remain neutral gray'
+Assert-NotMatches ([string]$row.Fill.Fill) '^#3c424c$' 'Recovered row fill must not remain neutral gray'
 Assert-Equal '67%' $row.Value.Text 'Recovered row must show the available percentage'
-Assert-Equal '#f8fafc' $row.Value.Foreground 'Recovered row must restore the normal foreground'
+Assert-Equal '#d8dde5' $row.Value.Foreground 'Recovered row must restore the Graphite primary foreground'
 
 Assert-Equal '--' (Format-OptionalDuration $null) 'Null reset duration must render as unavailable'
 Assert-Equal (Format-Duration 0) (Format-OptionalDuration 0) 'Zero reset duration must be formatted as an available value'
@@ -202,14 +209,15 @@ if (-not $codexBlockMatch.Success) {
 }
 $codexUiBlock = $codexBlockMatch.Groups['Body'].Value
 
-foreach ($propertyName in @('ShortRemaining', 'LongRemaining', 'ShortReset', 'LongReset')) {
+foreach ($propertyName in @('LongRemaining', 'LongReset')) {
     Assert-Matches $codexUiBlock ('\$usage\.' + $propertyName + '\b') "Codex UI must consume $propertyName"
 }
 
 Assert-NotMatches $codexUiBlock '\$usage\.(PrimaryRemaining|WeeklyRemaining|PrimaryReset|WeeklyReset)\b' 'Codex UI must not reference legacy window properties'
-Assert-Matches $codexUiBlock '(?s)if\s*\(\s*\$null\s*-ne\s*\$usage\.ShortRemaining\s*\)\s*\{\s*Set-Row\s+\$primaryRow\s+\$usage\.ShortRemaining.*?Notify-IfLowRemaining[^\r\n]*\$usage\.ShortRemaining\s*\}\s*else\s*\{\s*Set-RowUnavailable\s+\$primaryRow\s*\}' 'Short remaining notification must be guarded by availability'
+Assert-NotMatches $codexUiBlock '\$usage\.(ShortRemaining|ShortReset)\b|\$primaryRow\b' 'Codex UI must not consume or render the short window'
+Assert-NotMatches $codexUiBlock 'Notify-IfLowRemaining[^\r\n]*-Window\s+[''"]5h[''"]' 'Codex UI must not send a 5h notification'
 Assert-Matches $codexUiBlock '(?s)if\s*\(\s*\$null\s*-ne\s*\$usage\.LongRemaining\s*\)\s*\{\s*Set-Row\s+\$weeklyRow\s+\$usage\.LongRemaining.*?Notify-IfLowRemaining[^\r\n]*\$usage\.LongRemaining\s*\}\s*else\s*\{\s*Set-RowUnavailable\s+\$weeklyRow\s*\}' 'Long remaining notification must be guarded by availability'
-Assert-Matches $codexUiBlock '\$footer\.Text\s*=\s*\(''reset \{0\} / \{1\}''\s*-f\s*\(Format-OptionalDuration\s+\$usage\.ShortReset\),\s*\(Format-OptionalDuration\s+\$usage\.LongReset\)\)' 'Codex footer must format short and long resets independently'
+Assert-Matches $codexUiBlock '\$footer\.Text\s*=\s*\(''reset \{0\}''\s*-f\s*\(Format-OptionalDuration\s+\$usage\.LongReset\)\)' 'Codex footer must format only the long reset'
 
 $weeklyOnly = Convert-CodexRateLimitWindows -PrimaryWindow @{
     used_percent = 33

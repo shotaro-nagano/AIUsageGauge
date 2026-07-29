@@ -56,6 +56,13 @@ $getClaudeUsageAst = $startAst.Find({
 }, $true)
 Assert-True ($null -ne $getClaudeUsageAst) 'Get-ClaudeUsage function is missing'
 $getClaudeUsageText = $getClaudeUsageAst.Extent.Text
+$updateUsageAst = $startAst.Find({
+    param($ast)
+    $ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $ast.Name -eq 'Update-Usage'
+}, $true)
+Assert-True ($null -ne $updateUsageAst) 'Update-Usage function is missing'
+$updateUsageText = $updateUsageAst.Extent.Text
 
 Assert-True ($start -match 'Global\\AIUsageGauge') 'Start script must create a named mutex'
 Assert-True ($start -match '再ログイン要') 'Expired Claude auth must show a relogin-required label'
@@ -82,6 +89,30 @@ Assert-True ($start -match 'NotifyIcon') 'Gauge notifications must use a Windows
 Assert-True ($start -match 'Test-NotificationAllowed') 'Gauge must dedupe low-remaining notifications'
 Assert-True ($start -match 'stale') 'Gauge must visibly mark stale usage values'
 Assert-True ($start -match 'Get-LastHealthEventSummary') 'Gauge UI must expose recent watchdog/repair summary'
+Assert-True ($start -notmatch '\$primaryRow\b') 'Codex short row must be removed'
+$codexLongRows = [regex]::Matches($start, '(?m)^\s*\$weeklyRow\s*=\s*New-Row\s+''long''\s+0\s+''Codex''\s*$')
+Assert-True ($codexLongRows.Count -eq 1) 'Exactly one Codex long row is required'
+Assert-True ($start -match '(?s)\$claude5hRow\s*=\s*New-Row\s+''5h''\s+0\s+''Claude''.*?\$claude7dRow\s*=\s*New-Row\s+''7d''\s+0\s+''Claude''.*?\$claudeFableRow\s*=\s*New-Row\s+''Fable''\s+0\s+''Claude''') 'Claude rows must appear in 5h, 7d, Fable order'
+Assert-True ($start -match '#16191e') 'Graphite surface is required'
+Assert-True ($start -match '#3c424c') 'Graphite border is required'
+Assert-True ($start -match '#303640') 'Graphite track is required'
+Assert-True ($start -match '#d8dde5') 'Graphite primary text is required'
+Assert-True ($start -match '#aeb7c4') 'Graphite secondary text is required'
+foreach ($color in @('#cf5d63', '#c97a55', '#c2a35c', '#94a56d', '#84a98c', '#c59a72')) {
+    Assert-True ($start -match [regex]::Escape($color)) "Graphite fill color $color is required"
+}
+Assert-True ($start -match '\$outer\.CornerRadius\s*=\s*7\b') 'Graphite outer radius must be 7'
+Assert-True ($start -match '\$battery\.CornerRadius\s*=\s*2\b') 'Graphite bar radius must be 2'
+
+foreach ($window in @(
+    [pscustomobject]@{ Property = 'FiveHourRemaining'; Row = 'claude5hRow'; Label = '5h' }
+    [pscustomobject]@{ Property = 'SevenDayRemaining'; Row = 'claude7dRow'; Label = '7d' }
+    [pscustomobject]@{ Property = 'FableRemaining'; Row = 'claudeFableRow'; Label = 'Fable' }
+)) {
+    $guardPattern = '(?s)if\s*\(\s*\$null\s*-ne\s*\$cl\.' + $window.Property + '\s*\)\s*\{\s*Set-Row\s+\$' + $window.Row + '\s+\$cl\.' + $window.Property + '.*?Notify-IfLowRemaining\s+-Service\s+[''"]Claude[''"]\s+-Window\s+[''"]' + $window.Label + '[''"]\s+-RemainingPercent\s+\$cl\.' + $window.Property + '\s*\}\s*else\s*\{\s*Set-RowUnavailable\s+\$' + $window.Row + '\s*\}'
+    Assert-True ($updateUsageText -match $guardPattern) "Claude $($window.Label) rendering and notification must be guarded by availability"
+}
+Assert-True ($updateUsageText -match '(?s)AIUG_TOKEN_EXPIRED.*?Set-RowUnavailable\s+\$claude5hRow.*?Set-RowUnavailable\s+\$claude7dRow.*?Set-RowUnavailable\s+\$claudeFableRow.*?再ログイン要') 'Claude auth expiry must make all three rows unavailable and require relogin'
 
 Assert-True ($helper -match 'claude-code') 'Helper must discover Claude Code installs dynamically'
 Assert-True ($helper -match '--no-session-persistence') 'Helper must avoid persisting probe conversations'

@@ -379,12 +379,12 @@ function Format-OptionalDuration($Seconds) {
 }
 
 function Get-FillBrush([int]$RemainingPercent, [string]$Kind) {
-    # 残量パーセントで5段階に色分け (短期/長期 共通)
-    if ($RemainingPercent -le 10) { return '#dc2626' }  # 赤 (10%以下: 危険)
-    if ($RemainingPercent -le 25) { return '#f97316' }  # 濃いオレンジ (25%以下: 警告)
-    if ($RemainingPercent -le 50) { return '#fbbf24' }  # 黄色 (50%以下: 注意)
-    if ($RemainingPercent -le 75) { return '#84cc16' }  # 黄緑 (75%以下: 良好)
-    return '#22c55e'                                     # 緑 (76%以上: 余裕)
+    if ($RemainingPercent -le 10) { return '#cf5d63' }
+    if ($RemainingPercent -le 25) { return '#c97a55' }
+    if ($RemainingPercent -le 50) { return '#c2a35c' }
+    if ($RemainingPercent -le 75) { return '#94a56d' }
+    if ($Kind -eq 'Codex') { return '#84a98c' }
+    return '#c59a72'
 }
 
 function Convert-CodexRateLimitWindows {
@@ -689,7 +689,7 @@ function New-Row($Label, $InitialPercent, $Kind) {
 
     $labelBlock = New-Object System.Windows.Controls.TextBlock
     $labelBlock.Text = $Label
-    $labelBlock.Foreground = '#e5e7eb'
+    $labelBlock.Foreground = '#d8dde5'
     $labelBlock.FontSize = 10
     $labelBlock.FontWeight = 'SemiBold'
     $labelBlock.VerticalAlignment = 'Center'
@@ -698,18 +698,18 @@ function New-Row($Label, $InitialPercent, $Kind) {
 
     $battery = New-Object System.Windows.Controls.Border
     $battery.Height = 11
-    $battery.CornerRadius = 4
+    $battery.CornerRadius = 2
     $battery.BorderThickness = 1
-    $battery.BorderBrush = '#64748b'
-    $battery.Background = '#111827'
+    $battery.BorderBrush = '#3c424c'
+    $battery.Background = '#303640'
     $battery.VerticalAlignment = 'Center'
 
     $fill = New-Object System.Windows.Shapes.Rectangle
     $fill.Height = 7
     $fill.HorizontalAlignment = 'Left'
     $fill.Margin = '2,1,2,1'
-    $fill.RadiusX = 3
-    $fill.RadiusY = 3
+    $fill.RadiusX = 2
+    $fill.RadiusY = 2
     $fill.Fill = Get-FillBrush $InitialPercent $Kind
 
     $battery.Child = $fill
@@ -718,7 +718,7 @@ function New-Row($Label, $InitialPercent, $Kind) {
 
     $valueBlock = New-Object System.Windows.Controls.TextBlock
     $valueBlock.Text = "$InitialPercent%"
-    $valueBlock.Foreground = '#f8fafc'
+    $valueBlock.Foreground = '#d8dde5'
     $valueBlock.FontSize = 10
     $valueBlock.FontWeight = 'SemiBold'
     $valueBlock.TextAlignment = 'Right'
@@ -742,14 +742,14 @@ function Set-Row($Row, [int]$Percent) {
     $Row.Fill.Width = [Math]::Max(2, $innerWidth * $Percent / 100)
     $Row.Fill.Fill = Get-FillBrush $Percent $Row.Kind
     $Row.Value.Text = "$Percent%"
-    $Row.Value.Foreground = '#f8fafc'
+    $Row.Value.Foreground = '#d8dde5'
 }
 
 function Set-RowUnavailable($Row) {
     $Row.Fill.Width = 2
-    $Row.Fill.Fill = '#475569'
+    $Row.Fill.Fill = '#3c424c'
     $Row.Value.Text = '--'
-    $Row.Value.Foreground = '#94a3b8'
+    $Row.Value.Foreground = '#aeb7c4'
 }
 
 $window = New-Object System.Windows.Window
@@ -764,9 +764,9 @@ $window.ResizeMode = 'NoResize'
 $window.Title = 'AI Usage Gauge'
 
 $outer = New-Object System.Windows.Controls.Border
-$outer.CornerRadius = 10
-$outer.Background = '#dd0f172a'
-$outer.BorderBrush = '#334155'
+$outer.CornerRadius = 7
+$outer.Background = '#16191e'
+$outer.BorderBrush = '#3c424c'
 $outer.BorderThickness = 1
 $outer.Padding = '9,5,9,5'
 
@@ -775,19 +775,17 @@ $stack = New-Object System.Windows.Controls.StackPanel
 # --- Codex section ---
 $title = New-Object System.Windows.Controls.TextBlock
 $title.Text = 'Codex rate'
-$title.Foreground = '#cbd5e1'
+$title.Foreground = '#aeb7c4'
 $title.FontSize = 9
 $title.Margin = '0,0,0,2'
 $title.ToolTip = 'Left click and drag to move. Right click to close.'
 $stack.Children.Add($title) | Out-Null
 
-$primaryRow = New-Row '5h' 0 'primary'
-$weeklyRow = New-Row 'long' 0 'week'
-$stack.Children.Add($primaryRow.Root) | Out-Null
+$weeklyRow = New-Row 'long' 0 'Codex'
 $stack.Children.Add($weeklyRow.Root) | Out-Null
 
 $footer = New-Object System.Windows.Controls.TextBlock
-$footer.Foreground = '#94a3b8'
+$footer.Foreground = '#aeb7c4'
 $footer.FontSize = 8
 $footer.Margin = '0,0,0,3'
 $footer.Text = 'loading...'
@@ -796,25 +794,27 @@ $stack.Children.Add($footer) | Out-Null
 # --- Separator ---
 $sep = New-Object System.Windows.Controls.Border
 $sep.Height = 1
-$sep.Background = '#334155'
+$sep.Background = '#3c424c'
 $sep.Margin = '0,0,0,3'
 $stack.Children.Add($sep) | Out-Null
 
 # --- Claude section ---
 $claudeTitle = New-Object System.Windows.Controls.TextBlock
 $claudeTitle.Text = 'Claude rate'
-$claudeTitle.Foreground = '#cbd5e1'
+$claudeTitle.Foreground = '#aeb7c4'
 $claudeTitle.FontSize = 9
 $claudeTitle.Margin = '0,0,0,2'
 $stack.Children.Add($claudeTitle) | Out-Null
 
-$claude5hRow = New-Row '5h' 0 'primary'
-$claude7dRow = New-Row '7d' 0 '7d'
+$claude5hRow = New-Row '5h' 0 'Claude'
+$claude7dRow = New-Row '7d' 0 'Claude'
+$claudeFableRow = New-Row 'Fable' 0 'Claude'
 $stack.Children.Add($claude5hRow.Root) | Out-Null
 $stack.Children.Add($claude7dRow.Root) | Out-Null
+$stack.Children.Add($claudeFableRow.Root) | Out-Null
 
 $claudeFooter = New-Object System.Windows.Controls.TextBlock
-$claudeFooter.Foreground = '#94a3b8'
+$claudeFooter.Foreground = '#aeb7c4'
 $claudeFooter.FontSize = 8
 $claudeFooter.Margin = '0,0,0,0'
 $claudeFooter.Text = 'loading...'
@@ -860,26 +860,20 @@ function Update-Usage {
         } else {
             $usage = Get-CodexUsage
             $script:LastCodexUsage = $usage
-            if ($null -ne $usage.ShortRemaining) {
-                Set-Row $primaryRow $usage.ShortRemaining
-                Notify-IfLowRemaining -Service 'Codex' -Window '5h' -RemainingPercent $usage.ShortRemaining
-            } else {
-                Set-RowUnavailable $primaryRow
-            }
             if ($null -ne $usage.LongRemaining) {
                 Set-Row $weeklyRow $usage.LongRemaining
                 Notify-IfLowRemaining -Service 'Codex' -Window 'long' -RemainingPercent $usage.LongRemaining
             } else {
                 Set-RowUnavailable $weeklyRow
             }
-            $footer.Text = ('reset {0} / {1}' -f (Format-OptionalDuration $usage.ShortReset), (Format-OptionalDuration $usage.LongReset))
+            $footer.Text = ('reset {0}' -f (Format-OptionalDuration $usage.LongReset))
             $footer.ToolTip = Get-LastHealthEventSummary
             if ($usage.LimitReached) {
                 $title.Text = 'Codex rate - capped'
-                $outer.BorderBrush = '#ef4444'
+                $outer.BorderBrush = '#cf5d63'
             } else {
                 $title.Text = 'Codex rate'
-                $outer.BorderBrush = '#334155'
+                $outer.BorderBrush = '#3c424c'
             }
         }
     } catch {
@@ -889,7 +883,7 @@ function Update-Usage {
         } else {
             $footer.Text = 'unavailable'
         }
-        $outer.BorderBrush = '#ef4444'
+        $outer.BorderBrush = '#cf5d63'
     }
 
     # Claude
@@ -901,11 +895,25 @@ function Update-Usage {
         } else {
             $cl = Get-ClaudeUsage
             $script:LastClaudeUsage = $cl
-            Set-Row $claude5hRow $cl.FiveHourRemaining
-            Set-Row $claude7dRow $cl.SevenDayRemaining
-            Notify-IfLowRemaining -Service 'Claude' -Window '5h' -RemainingPercent $cl.FiveHourRemaining
-            Notify-IfLowRemaining -Service 'Claude' -Window '7d' -RemainingPercent $cl.SevenDayRemaining
-            $claudeFooter.Text = ('reset {0} / {1}' -f (Format-Duration $cl.FiveHourReset), (Format-Duration $cl.SevenDayReset))
+            if ($null -ne $cl.FiveHourRemaining) {
+                Set-Row $claude5hRow $cl.FiveHourRemaining
+                Notify-IfLowRemaining -Service 'Claude' -Window '5h' -RemainingPercent $cl.FiveHourRemaining
+            } else {
+                Set-RowUnavailable $claude5hRow
+            }
+            if ($null -ne $cl.SevenDayRemaining) {
+                Set-Row $claude7dRow $cl.SevenDayRemaining
+                Notify-IfLowRemaining -Service 'Claude' -Window '7d' -RemainingPercent $cl.SevenDayRemaining
+            } else {
+                Set-RowUnavailable $claude7dRow
+            }
+            if ($null -ne $cl.FableRemaining) {
+                Set-Row $claudeFableRow $cl.FableRemaining
+                Notify-IfLowRemaining -Service 'Claude' -Window 'Fable' -RemainingPercent $cl.FableRemaining
+            } else {
+                Set-RowUnavailable $claudeFableRow
+            }
+            $claudeFooter.Text = ('reset {0} / {1}' -f (Format-OptionalDuration $cl.FiveHourReset), (Format-OptionalDuration $cl.SevenDayReset))
             $claudeFooter.ToolTip = Get-LastHealthEventSummary
             $claudeTitle.Text = 'Claude rate'
             $script:ClaudeNeedsRelogin = $false
@@ -914,10 +922,9 @@ function Update-Usage {
         $claudeTitle.Text = 'Claude rate'
         $errMsg = $_.Exception.Message
         if ($errMsg -match 'AIUG_TOKEN_EXPIRED|401|Unauthorized') {
-            Set-Row $claude5hRow 0
-            Set-Row $claude7dRow 0
-            $claude5hRow.Fill.Fill = '#475569'
-            $claude7dRow.Fill.Fill = '#475569'
+            Set-RowUnavailable $claude5hRow
+            Set-RowUnavailable $claude7dRow
+            Set-RowUnavailable $claudeFableRow
             $claudeFooter.Text = '🔑 再ログイン要'
             $script:ClaudeNeedsRelogin = $true
             Show-AIUsageGaugeNotification -Key 'Claude-auth-expired' -Title 'AI Usage Gauge' -Message 'Claude needs relogin.' -Icon 'Error'
