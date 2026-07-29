@@ -10,6 +10,8 @@
 > - Claude OAuth トークンの自動更新を堅牢化（標準 Claude CLI に refresh を委譲 / hidden scheduled task でローカル期限を確認 / ログオン・スリープ復帰で自己修復 / 429 バックオフ + 状態の永続化）。再ログインの手間を最小化。
 > - Watchdog と診断コマンドを追加（既存の hidden refresh task から Gauge の生存確認 / Claude refresh task の修復 / トークン非表示の状態確認）。
 > - 低残量/認証異常通知、stale 表示、ドラッグ位置の永続化、外部 `settings.json`、インストール/ZIP作成スクリプトを追加。
+> - Graphite デザインへ刷新し、Codex は `long`、Claude は `5h` / `7d` / `Fable` を表示。
+> - 30秒 heartbeat と確認付き自動復旧、接続中モニター内への自動復帰を追加。
 
 ---
 
@@ -18,7 +20,7 @@
 CodexPets の近くに表示する、Codex / Claude の残り使用量ゲージです。
 ※画像のPetsは付属していません
 
-Codex / Claude それぞれについて、短期枠（5時間）と長期枠（週/7日相当）の残り目安を表示します。
+Codex の `long` と、Claude の `5h` / `7d` / `Fable` の残り目安を表示します。
 起動すると CodexPets のそばに出現し、Pets の位置を追従します。
 Pets が非表示でもゲージ自体は機能します。
 
@@ -26,12 +28,14 @@ Pets が非表示でもゲージ自体は機能します。
 
 ## できること
 
-- Codex の短期枠（5時間）・長期枠の残り目安を表示
-- Claude の短期枠（5時間）・7日枠の残り目安を表示
+- Codex の `long` 残量を表示
+- Claude の `5h` / `7d` / `Fable` 残量を表示
+- 落ち着いた Graphite 配色で状態を5段階表示
 - CodexPets の近くに自動配置
 - CodexPets の移動に追従
 - CodexPets が非表示でも単体ゲージとして動作
 - ドラッグで位置調整（再起動後も位置を復元）
+- モニター構成変更後もゲージ全体を接続中の画面内へ自動復帰
 - API取得失敗時に古い値を `stale` として明示
 - 低残量やClaude再ログイン要否をWindows通知
 - ターミナルなしで起動できる VBS ランチャー付き
@@ -105,6 +109,10 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\Install-AIUsageGauge.ps1
   "StaleAfterMinutes": 5,
   "LogRetentionDays": 2,
   "PersistWindowPosition": true,
+  "HealthHeartbeatSeconds": 30,
+  "HealthStaleMinutes": 10,
+  "HeartbeatConfirmationSeconds": 10,
+  "ScreenMargin": 6,
   "PackageName": "AI-Usage-Gauge"
 }
 ```
@@ -129,7 +137,9 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\Install-ClaudeOAuthRefreshTask.p
 
 ## Watchdog と診断
 
-既存の `ClaudeOAuthRefresh` scheduled task は、5分ごとの hidden heartbeat として Watchdog も呼び出します。Watchdog は非表示で短時間だけ動き、Gauge が落ちていれば `Start-AIUsageGauge-hidden.vbs` から再起動します。
+既存の `ClaudeOAuthRefresh` scheduled task は、5分ごとに Watchdog も非表示で呼び出します。Gauge は `%LOCALAPPDATA%\AIUsageGauge\health.json` へ30秒ごとにトークンを含まない heartbeat を書きます。Watchdog は10分以上停止した heartbeat を再確認し、応答が戻らない場合だけ `Start-AIUsageGauge-hidden.vbs` から再起動します。
+
+停止対象は、PID・プロセス開始時刻・Windows実引数を再検証し、正規のインストール先にある `-File ... Start-AIUsageGauge.ps1` を実行中の1プロセスだけです。別の `pwsh` や `powershell` は停止しません。スリープ復帰時は直ちに heartbeat を更新し、通常動作中の誤停止を防ぎます。
 
 Watchdog を手動で実行した場合は、Claude refresh task が壊れている場合も同梱 installer で修復を試みます。scheduled task から呼ばれる通常経路では、自分自身のタスク定義を書き換えないため、権限エラーを増やしません。
 
@@ -161,8 +171,7 @@ OpenAI、Anthropic、Codex Desktop、Claude Code の公式ツールではあり�
 
 Codex側は、ローカルの Codex ログイン情報を使って現在の使用量エンドポイントを読みます。
 
-Claude側は、Claude Code のOAuthログイン情報を使って最小の Messages API リクエストを送り、返ってくる rate-limit ヘッダーから残量を推定します。
-そのため、Claude側の確認は小さなClaude使用量としてカウントされる可能性があります。
+Claude側は、Claude Code のOAuthログイン情報を使い、公式ホストの `GET https://api.anthropic.com/api/oauth/usage` から `5h` / `7d` / `Fable` の使用率を読みます。トークン値は表示・ログ保存せず、使用量確認のためのモデルリクエストも送りません。
 
 APIやローカル状態ファイルの仕様が変わると、予告なく動かなくなる可能性があります。
 

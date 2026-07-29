@@ -12,6 +12,7 @@ $ScriptDir = if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) {
 }
 $EventLogDir = Join-Path $env:LOCALAPPDATA 'AIUsageGauge'
 $EventLogPath = Join-Path $EventLogDir 'events.log'
+$HealthStatePath = Join-Path $EventLogDir 'health.json'
 $WatchdogScriptPath = Join-Path $ScriptDir 'Watch-AIUsageGaugeHealth.ps1'
 
 function Get-ClaudeCredentialExpiry {
@@ -160,10 +161,62 @@ function Get-LastHealthEventSummary {
     [pscustomobject]@{ Found = $false; Event = $null; Timestamp = $null; Summary = 'health: no recent repair events' }
 }
 
+function Convert-GaugeServiceHealthStatus {
+    param($Service)
+
+    if ($null -eq $Service) { return $null }
+    [pscustomobject]@{
+        Status = [string]$Service.status
+        LastSuccessAt = if ($null -eq $Service.lastSuccessAt) { $null } else { [string]$Service.lastSuccessAt }
+    }
+}
+
+function Get-GaugeHealthStatus {
+    $empty = [ordered]@{
+        Available = $false
+        State = 'missing'
+        ProcessId = $null
+        ProcessStartedAt = $null
+        UiHeartbeatAt = $null
+        LastUpdateAttemptAt = $null
+        Codex = $null
+        Claude = $null
+        LastScreenCorrectionAt = $null
+    }
+
+    if (!(Test-Path -LiteralPath $HealthStatePath)) {
+        return [pscustomobject]$empty
+    }
+
+    try {
+        $health = Get-Content -Raw -LiteralPath $HealthStatePath | ConvertFrom-Json
+        $processId = 0
+        if (-not [int]::TryParse([string]$health.pid, [ref]$processId)) {
+            throw 'Invalid process id.'
+        }
+
+        [pscustomobject]@{
+            Available = $true
+            State = 'available'
+            ProcessId = $processId
+            ProcessStartedAt = [string]$health.processStartedAt
+            UiHeartbeatAt = [string]$health.uiHeartbeatAt
+            LastUpdateAttemptAt = if ($null -eq $health.lastUpdateAttemptAt) { $null } else { [string]$health.lastUpdateAttemptAt }
+            Codex = Convert-GaugeServiceHealthStatus $health.codex
+            Claude = Convert-GaugeServiceHealthStatus $health.claude
+            LastScreenCorrectionAt = if ($null -eq $health.lastScreenCorrectionAt) { $null } else { [string]$health.lastScreenCorrectionAt }
+        }
+    } catch {
+        $empty.State = 'malformed'
+        [pscustomobject]$empty
+    }
+}
+
 function Get-AIUsageGaugeStatus {
     [pscustomobject]@{
         Timestamp = [DateTimeOffset]::Now.ToString('o')
         GaugeProcess = Get-GaugeProcessStatus
+        GaugeHealth = Get-GaugeHealthStatus
         ClaudeCredentials = Get-ClaudeCredentialExpiry -Path $ClaudeCredentialsPath
         ClaudeOAuthRefreshTask = Get-TaskStatus -TaskName 'ClaudeOAuthRefresh'
         HealthWatchdog = [pscustomobject]@{
@@ -184,6 +237,7 @@ if ($Json) {
 
 Write-Host 'AI Usage Gauge status'
 Write-Host ('  Gauge running: {0} (count={1})' -f $status.GaugeProcess.Running, $status.GaugeProcess.Count)
+Write-Host ('  Gauge heartbeat: state={0}, pid={1}, at={2}' -f $status.GaugeHealth.State, $status.GaugeHealth.ProcessId, $status.GaugeHealth.UiHeartbeatAt)
 Write-Host ('  Claude credentials: exists={0}, expired={1}, remainingMinutes={2}, expiresAt={3}' -f $status.ClaudeCredentials.Exists, $status.ClaudeCredentials.Expired, $status.ClaudeCredentials.RemainingMinutes, $status.ClaudeCredentials.ExpiresAtLocal)
 Write-Host ('  Claude refresh task: exists={0}, lastResult={1}, nextRun={2}' -f $status.ClaudeOAuthRefreshTask.Exists, $status.ClaudeOAuthRefreshTask.LastTaskResult, $status.ClaudeOAuthRefreshTask.NextRunTime)
 Write-Host ('  Watchdog heartbeat: mode={0}, task={1}, scriptExists={2}' -f $status.HealthWatchdog.Mode, $status.HealthWatchdog.HeartbeatTask, $status.HealthWatchdog.ScriptExists)

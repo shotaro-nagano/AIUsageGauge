@@ -45,11 +45,7 @@ function New-AIUsageGaugeShortcut {
 }
 
 function Ensure-SettingsFile {
-    if (Test-Path -LiteralPath $settingsPath) {
-        return
-    }
-
-    [ordered]@{
+    $defaults = [ordered]@{
         RefreshSeconds = 180
         Placement = 'left'
         EnableCodex = $true
@@ -60,8 +56,33 @@ function Ensure-SettingsFile {
         StaleAfterMinutes = 5
         LogRetentionDays = 2
         PersistWindowPosition = $true
+        HealthHeartbeatSeconds = 30
+        HealthStaleMinutes = 10
+        HeartbeatConfirmationSeconds = 10
+        ScreenMargin = 6
         PackageName = 'AI-Usage-Gauge'
-    } | ConvertTo-Json | Set-Content -LiteralPath $settingsPath -Encoding UTF8
+    }
+
+    if (!(Test-Path -LiteralPath $settingsPath)) {
+        $defaults | ConvertTo-Json | Set-Content -LiteralPath $settingsPath -Encoding UTF8
+        return
+    }
+
+    try {
+        $settings = Get-Content -Raw -LiteralPath $settingsPath | ConvertFrom-Json
+        $changed = $false
+        foreach ($entry in $defaults.GetEnumerator()) {
+            if ($null -eq $settings.PSObject.Properties[$entry.Key]) {
+                $settings | Add-Member -NotePropertyName $entry.Key -NotePropertyValue $entry.Value
+                $changed = $true
+            }
+        }
+        if ($changed) {
+            $settings | ConvertTo-Json | Set-Content -LiteralPath $settingsPath -Encoding UTF8
+        }
+    } catch {
+        throw "settings.json is malformed. Existing settings were not changed."
+    }
 }
 
 function Install-Shortcuts {

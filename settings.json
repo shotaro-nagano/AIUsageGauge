@@ -9,5 +9,9 @@
   "StaleAfterMinutes": 5,
   "LogRetentionDays": 2,
   "PersistWindowPosition": true,
+  "HealthHeartbeatSeconds": 30,
+  "HealthStaleMinutes": 10,
+  "HeartbeatConfirmationSeconds": 10,
+  "ScreenMargin": 6,
   "PackageName": "AI-Usage-Gauge"
 }

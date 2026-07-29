@@ -1,6 +1,6 @@
 # AI Usage Gauge
 
-Unofficial floating usage gauge for Codex Desktop and Claude Code. It follows the Codex pet and shows the remaining short-term and longer-term usage for both tools.
+Unofficial floating usage gauge for Codex Desktop and Claude Code. It follows the Codex pet and uses a calm Graphite interface.
 
 Languages: [English](#english) | [日本語](#日本語)
 
@@ -15,20 +15,22 @@ AI Usage Gauge is a small always-on-top Windows overlay.
 It:
 
 - follows the Codex Desktop pet
-- shows remaining Codex and Claude usage for the 5-hour window
-- shows remaining Codex longer-term usage and Claude 7-day usage
+- shows the Codex `long` remaining quota
+- shows Claude `5h`, `7d`, and `Fable` remaining quotas
 - updates usage periodically without increasing request frequency aggressively
 - can be moved manually by dragging
+- returns the full gauge to an active monitor after display changes
+- writes a token-free heartbeat every 30 seconds for confirmed automatic recovery
 
 The Codex gauge reads:
 
-- `primary_window.used_percent` as the 5-hour usage
 - `secondary_window.used_percent` as the longer-term usage
 
-The Claude gauge sends a minimal Claude Code OAuth-authenticated Messages API request and reads:
+The Claude gauge performs an OAuth-authenticated `GET https://api.anthropic.com/api/oauth/usage` and reads:
 
-- `anthropic-ratelimit-unified-5h-utilization` as the 5-hour usage
-- `anthropic-ratelimit-unified-7d-utilization` as the 7-day usage
+- `five_hour.utilization` as the 5-hour usage
+- `seven_day.utilization` as the 7-day usage
+- the weekly scoped limit whose model display name is `Fable`
 
 It displays remaining percent as:
 
@@ -99,15 +101,19 @@ Do not distribute only `Start-AIUsageGauge-hidden.vbs`; it is only a launcher fo
 - Left-drag: move the gauge manually
 - Right-click: close the gauge
 
-If you drag the gauge, it remembers the offset relative to the pet for the current run.
+If you drag the gauge, it persists the offset relative to the pet. A 6 px margin keeps the full gauge inside the nearest active monitor.
+
+### Automatic Recovery
+
+The gauge writes `%LOCALAPPDATA%\AIUsageGauge\health.json` every 30 seconds. The hidden watchdog treats the UI as frozen only after 10 minutes without a heartbeat and a second confirmation. It revalidates the PID, exact process start time, Windows command-line arguments, and canonical `-File ... Start-AIUsageGauge.ps1` path immediately before stopping that one process. It never stops unrelated PowerShell processes. Resume events update the heartbeat immediately.
 
 ### Security
 
 - The script reads your local Codex `auth.json` at refresh time.
 - It uses the local Codex access token only to call the Codex usage endpoint.
 - The script reads your local Claude Code `.credentials.json` at refresh time.
-- It uses the Claude Code OAuth access token only to call the Anthropic Messages API and read rate-limit headers.
-- The Claude check sends a tiny model request, so it may count as Claude usage.
+- It uses the Claude Code OAuth access token only for the official `/api/oauth/usage` GET.
+- The usage check does not send a model request.
 - If the Claude OAuth token expires, the script may refresh it and write the refreshed values back to Claude Code's credentials file.
 - It does not print, upload, or commit tokens.
 - Do not share your real `.codex` folder.
@@ -123,7 +129,7 @@ It depends on internal Codex Desktop state files, local Claude Code credential s
 
 ```text
 https://chatgpt.com/backend-api/wham/usage
-https://api.anthropic.com/v1/messages
+https://api.anthropic.com/api/oauth/usage
 ```
 
 These details may change without notice. The tool may stop working after a Codex Desktop, Claude Code, or API update.
@@ -139,22 +145,24 @@ AI Usage Gauge は、Codex Desktop のペット横に表示する、Codex Deskto
 できること:
 
 - Codex Desktop のペットに追従する
-- Codex と Claude の短期枠（5時間）の残り目安を表示する
-- Codex の長期枠と Claude の7日枠の残り目安を表示する
+- Codex の `long` の残り目安を表示する
+- Claude の `5h` / `7d` / `Fable` の残り目安を表示する
 - 使用量は定期更新しつつ、APIアクセスは増やしすぎない
 - ドラッグで手動位置調整できる
+- Graphite 配色で落ち着いて表示する
+- モニター構成変更後も接続中の画面内へ自動復帰する
 
 Codex で取得している値:
 
-- `primary_window.used_percent`: 5時間枠の使用済み%
 - `secondary_window.used_percent`: 長期枠の使用済み%
 
 Claude で取得している値:
 
-- `anthropic-ratelimit-unified-5h-utilization`: 5時間枠の使用済み率
-- `anthropic-ratelimit-unified-7d-utilization`: 7日枠の使用済み率
+- `five_hour.utilization`: 5時間枠の使用済み率
+- `seven_day.utilization`: 7日枠の使用済み率
+- `limits` 内の週次 `Fable` 枠
 
-Claude 側は、Claude Code のOAuth資格情報で最小の Messages API リクエストを送り、そのレスポンスヘッダーから読み取ります。
+Claude 側は、Claude Code のOAuth資格情報で `GET https://api.anthropic.com/api/oauth/usage` を呼びます。モデルリクエストは送信しません。
 
 表示している値:
 
@@ -227,15 +235,19 @@ pwsh -STA -ExecutionPolicy Bypass -File .\Start-AIUsageGauge.ps1 -Placement righ
 - 左ドラッグ: ゲージを手動で動かす
 - 右クリック: ゲージを閉じる
 
-ドラッグした場合、その起動中は「ペットからの相対位置」として追従します。
+ドラッグ位置は「ペットからの相対位置」として永続化します。モニター変更時は6 pxの余白を保ち、ゲージ全体を最寄りの接続中画面へ戻します。
+
+### 自己診断と自動復旧
+
+ゲージは `%LOCALAPPDATA%\AIUsageGauge\health.json` へ30秒ごとにトークンを含まない heartbeat を書きます。Watchdog は10分以上止まった状態をもう一度確認し、復帰しない場合だけ再起動します。停止直前にPID、正確な開始時刻、Windows実引数、正規の `-File ... Start-AIUsageGauge.ps1` パスを再検証し、その1プロセスだけを停止します。無関係な PowerShell プロセスは停止しません。スリープ復帰時は heartbeat を直ちに更新します。
 
 ### セキュリティ
 
 - スクリプトは更新時にローカルの Codex `auth.json` を読みます。
 - Codex のアクセストークンは、使用量エンドポイントを読むためだけに使います。
 - スクリプトは更新時にローカルの Claude Code `.credentials.json` を読みます。
-- Claude Code のOAuthアクセストークンは、Anthropic Messages API を呼び、レート制限ヘッダーを読むためだけに使います。
-- Claude 側の確認は小さなモデルリクエストを送るため、Claude の使用量に含まれる可能性があります。
+- Claude Code のOAuthアクセストークンは、公式 `/api/oauth/usage` GET のためだけに使います。
+- 使用量確認ではモデルリクエストを送信しません。
 - Claude のOAuthトークンが期限切れの場合、refreshして Claude Code の認証ファイルへ書き戻す場合があります。
 - トークンを表示、アップロード、Gitコミットする処理はありません。
 - 自分の `.codex` フォルダを共有しないでください。
@@ -251,7 +263,7 @@ Codex Desktop の内部状態ファイル、Claude Code のローカル認証フ
 
 ```text
 https://chatgpt.com/backend-api/wham/usage
-https://api.anthropic.com/v1/messages
+https://api.anthropic.com/api/oauth/usage
 ```
 
 これらの仕様は予告なく変わる可能性があります。Codex Desktop、Claude Code、またはAPIのアップデート後に動かなくなる場合があります。
