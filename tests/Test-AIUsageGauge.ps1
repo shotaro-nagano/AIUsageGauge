@@ -93,6 +93,19 @@ Assert-True ($start -notmatch '\$primaryRow\b') 'Codex short row must be removed
 $codexLongRows = [regex]::Matches($start, '(?m)^\s*\$weeklyRow\s*=\s*New-Row\s+''long''\s+0\s+''Codex''\s*$')
 Assert-True ($codexLongRows.Count -eq 1) 'Exactly one Codex long row is required'
 Assert-True ($start -match '(?s)\$claude5hRow\s*=\s*New-Row\s+''5h''\s+0\s+''Claude''.*?\$claude7dRow\s*=\s*New-Row\s+''7d''\s+0\s+''Claude''.*?\$claudeFableRow\s*=\s*New-Row\s+''Fable''\s+0\s+''Claude''') 'Claude rows must appear in 5h, 7d, Fable order'
+$updateUsageDefinitionIndex = $start.IndexOf('function Update-Usage')
+Assert-True ($updateUsageDefinitionIndex -gt 0) 'Update-Usage definition must follow row creation'
+$rowInitializationText = $start.Substring(0, $updateUsageDefinitionIndex)
+$missingUnavailableInitializers = @(
+    foreach ($rowName in @('weeklyRow', 'claude5hRow', 'claude7dRow', 'claudeFableRow')) {
+        $creationMatch = [regex]::Match($rowInitializationText, '(?m)^\s*\$' + $rowName + '\s*=\s*New-Row\b')
+        $unavailableMatch = [regex]::Match($rowInitializationText, '(?m)^\s*Set-RowUnavailable\s+\$' + $rowName + '\s*$')
+        if (-not $creationMatch.Success -or -not $unavailableMatch.Success -or $unavailableMatch.Index -le $creationMatch.Index) {
+            $rowName
+        }
+    }
+)
+Assert-True ($missingUnavailableInitializers.Count -eq 0) ('Every usage row must be initialized as unavailable before Update-Usage. Missing: {0}' -f ($missingUnavailableInitializers -join ', '))
 Assert-True ($start -match '#16191e') 'Graphite surface is required'
 Assert-True ($start -match '#3c424c') 'Graphite border is required'
 Assert-True ($start -match '#303640') 'Graphite track is required'

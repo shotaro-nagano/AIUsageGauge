@@ -813,6 +813,11 @@ $stack.Children.Add($claude5hRow.Root) | Out-Null
 $stack.Children.Add($claude7dRow.Root) | Out-Null
 $stack.Children.Add($claudeFableRow.Root) | Out-Null
 
+Set-RowUnavailable $weeklyRow
+Set-RowUnavailable $claude5hRow
+Set-RowUnavailable $claude7dRow
+Set-RowUnavailable $claudeFableRow
+
 $claudeFooter = New-Object System.Windows.Controls.TextBlock
 $claudeFooter.Foreground = '#aeb7c4'
 $claudeFooter.FontSize = 8
