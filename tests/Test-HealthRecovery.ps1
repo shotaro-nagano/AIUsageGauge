@@ -89,7 +89,7 @@ $matchingCommandLines = @(
     'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -NonInteractive -File C:\app\Start-AIUsageGauge.ps1',
     '"C:\Program Files\PowerShell\7\pwsh.exe" -NoLogo -File ''C:\app dir\Start-AIUsageGauge.ps1'' -RefreshSeconds 30',
     'PWSH -File Start-AIUsageGauge.ps1',
-    'pwsh.exe -File C:\app\Start-AIUsageGauge.ps1 -e script-value -CommandWithArgs script-value'
+    'pwsh.exe -File C:\app\Start-AIUsageGauge.ps1 -e script-value -en script-value -enco script-value -CommandWithArgs script-value -cwa script-value -EncodedArguments script-value'
 )
 foreach ($commandLine in $matchingCommandLines) {
     Assert-True (Test-GaugeProcessCommandLine $commandLine) "Gauge command line must match: $commandLine"
@@ -103,6 +103,8 @@ $nonMatchingCommandLines = @(
     'pwsh.exe -enc AAA -File C:\app\Start-AIUsageGauge.ps1',
     'pwsh.exe -e AAA -File C:\app\Start-AIUsageGauge.ps1',
     'pwsh.exe -ec AAA -File C:\app\Start-AIUsageGauge.ps1',
+    'pwsh.exe -en AAA -File C:\app\Start-AIUsageGauge.ps1',
+    'pwsh.exe -enco AAA -File C:\app\Start-AIUsageGauge.ps1',
     'pwsh.exe -CommandWithArgs "Write-Host ready" -File C:\app\Start-AIUsageGauge.ps1',
     'pwsh.exe -cwa "Write-Host ready" -File C:\app\Start-AIUsageGauge.ps1',
     'pwsh.exe -EncodedArguments AAA -File C:\app\Start-AIUsageGauge.ps1',
@@ -115,6 +117,31 @@ $nonMatchingCommandLines = @(
 )
 foreach ($commandLine in $nonMatchingCommandLines) {
     Assert-False (Test-GaugeProcessCommandLine $commandLine) "Non-gauge command line must not match: $commandLine"
+}
+
+$executionSelectorNames = @(
+    'Command'
+    'CommandWithArgs'
+    'EncodedCommand'
+    'EncodedArguments'
+)
+$executionSelectorTokens = [System.Collections.Generic.HashSet[string]]::new(
+    [System.StringComparer]::OrdinalIgnoreCase
+)
+foreach ($selectorName in $executionSelectorNames) {
+    foreach ($prefixLength in 1..$selectorName.Length) {
+        [void]$executionSelectorTokens.Add($selectorName.Substring(0, $prefixLength))
+    }
+}
+foreach ($selectorAlias in @('c', 'cwa', 'e', 'ec', 'enc')) {
+    [void]$executionSelectorTokens.Add($selectorAlias)
+}
+
+foreach ($selectorToken in @($executionSelectorTokens | Sort-Object)) {
+    foreach ($caseVariant in @($selectorToken.ToLowerInvariant(), $selectorToken.ToUpperInvariant())) {
+        $selectorCommandLine = 'pwsh.exe -{0} selector-payload -File C:\app\Start-AIUsageGauge.ps1' -f $caseVariant
+        Assert-False (Test-GaugeProcessCommandLine $selectorCommandLine) "Execution selector prefix must not match: -$caseVariant"
+    }
 }
 
 Assert-False (Test-GaugeProcessCommandLine $null) 'A null command line must not match'

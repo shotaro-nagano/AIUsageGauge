@@ -168,19 +168,34 @@ function Test-GaugeProcessCommandLine {
         return $false
     }
 
+    $executionSelectorNames = @(
+        'Command'
+        'CommandWithArgs'
+        'EncodedCommand'
+        'EncodedArguments'
+    )
+    $executionSelectorAliases = @('c', 'cwa', 'e', 'ec', 'enc')
+
     for ($index = 1; $index -lt $arguments.Count; $index++) {
-        if ($arguments[$index] -iin @(
-            '-Command'
-            '-c'
-            '-CommandWithArgs'
-            '-cwa'
-            '-EncodedCommand'
-            '-e'
-            '-ec'
-            '-enc'
-            '-EncodedArguments'
-        )) {
-            return $false
+        if ($arguments[$index].StartsWith('-') -and $arguments[$index].Length -gt 1) {
+            $optionName = $arguments[$index].TrimStart('-')
+            $nameSeparatorIndex = $optionName.IndexOf(':')
+            if ($nameSeparatorIndex -ge 0) {
+                $optionName = $optionName.Substring(0, $nameSeparatorIndex)
+            }
+
+            $isExecutionSelector = $optionName -iin $executionSelectorAliases
+            if (-not $isExecutionSelector) {
+                foreach ($selectorName in $executionSelectorNames) {
+                    if ($selectorName.StartsWith($optionName, [StringComparison]::OrdinalIgnoreCase)) {
+                        $isExecutionSelector = $true
+                        break
+                    }
+                }
+            }
+            if ($isExecutionSelector) {
+                return $false
+            }
         }
         if ($arguments[$index] -ine '-File') {
             continue
