@@ -138,21 +138,74 @@ Assert-Equal 2 (Convert-ClaudeResetToSeconds '2026-07-29T03:20:01.001Z' $now) 'r
 Assert-Equal 0 (Convert-ClaudeResetToSeconds '2026-07-29T03:19:59Z' $now) 'past reset must clamp to zero'
 Assert-Null (Convert-ClaudeResetToSeconds $null $now) 'missing reset must remain null'
 
-$invalidFable = [pscustomobject]@{
-    five_hour = $response.five_hour
-    seven_day = $response.seven_day
-    limits = @(
-        [pscustomobject]@{
-            kind = 'weekly_scoped'
-            percent = 'not-a-number'
-            scope = [pscustomobject]@{
-                model = [pscustomobject]@{ display_name = 'Fable' }
-            }
+$invalidQuotaCases = @(
+    [pscustomobject]@{
+        Name = 'Nonnumeric Fable string'
+        Target = 'Fable'
+        Value = 'not-a-number'
+        ExpectedMessage = 'Fable percent must be numeric.'
+    }
+    [pscustomobject]@{
+        Name = 'Empty Fable string'
+        Target = 'Fable'
+        Value = ''
+        ExpectedMessage = 'Fable percent must be numeric.'
+    }
+    [pscustomobject]@{
+        Name = 'Boolean Fable value'
+        Target = 'Fable'
+        Value = $true
+        ExpectedMessage = 'Fable percent must be numeric.'
+    }
+    [pscustomobject]@{
+        Name = 'Numeric-looking Fable string'
+        Target = 'Fable'
+        Value = '19'
+        ExpectedMessage = 'Fable percent must be numeric.'
+    }
+    [pscustomobject]@{
+        Name = 'Numeric-looking 5h string'
+        Target = 'FiveHour'
+        Value = '19'
+        ExpectedMessage = 'five_hour.utilization must be numeric.'
+    }
+    [pscustomobject]@{
+        Name = 'Boolean 7d value'
+        Target = 'SevenDay'
+        Value = $true
+        ExpectedMessage = 'seven_day.utilization must be numeric.'
+    }
+)
+
+foreach ($case in $invalidQuotaCases) {
+    $invalidResponse = [pscustomobject]@{
+        five_hour = [pscustomobject]@{
+            utilization = if ($case.Target -eq 'FiveHour') { $case.Value } else { 19 }
+            resets_at = $response.five_hour.resets_at
         }
-    )
+        seven_day = [pscustomobject]@{
+            utilization = if ($case.Target -eq 'SevenDay') { $case.Value } else { 4 }
+            resets_at = $response.seven_day.resets_at
+        }
+        limits = @(
+            [pscustomobject]@{
+                kind = 'weekly_scoped'
+                percent = if ($case.Target -eq 'Fable') { $case.Value } else { 0 }
+                scope = [pscustomobject]@{
+                    model = [pscustomobject]@{ display_name = 'Fable' }
+                }
+            }
+        )
+    }
+
+    $assertThrowsParams = @{
+        Action = {
+            Convert-ClaudeUsageResponse -UsageResponse $invalidResponse -Now $now | Out-Null
+        }
+        ExpectedMessage = $case.ExpectedMessage
+        Message = "$($case.Name) must be rejected"
+    }
+    Assert-Throws @assertThrowsParams
 }
-Assert-Throws {
-    Convert-ClaudeUsageResponse -UsageResponse $invalidFable -Now $now | Out-Null
-} 'Fable percent must be numeric.' 'Nonnumeric Fable percent must be rejected'
 
 Write-Host 'Claude usage mapping tests passed'

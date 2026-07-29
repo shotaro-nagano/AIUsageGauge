@@ -531,7 +531,23 @@ function Convert-ClaudeUsageResponse {
 
     function Convert-Remaining($Value, [string]$Name) {
         if ($null -eq $Value) { return $null }
-        try { $used = [double]$Value } catch { throw "$Name must be numeric." }
+        $typeCode = [Type]::GetTypeCode($Value.GetType())
+        if ($typeCode -notin @(
+            [TypeCode]::SByte
+            [TypeCode]::Byte
+            [TypeCode]::Int16
+            [TypeCode]::UInt16
+            [TypeCode]::Int32
+            [TypeCode]::UInt32
+            [TypeCode]::Int64
+            [TypeCode]::UInt64
+            [TypeCode]::Single
+            [TypeCode]::Double
+            [TypeCode]::Decimal
+        )) {
+            throw "$Name must be numeric."
+        }
+        $used = [double]$Value
         return Clamp-Percent ([int][Math]::Round(100 - $used))
     }
 
