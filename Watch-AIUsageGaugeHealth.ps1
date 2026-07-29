@@ -169,7 +169,17 @@ function Test-GaugeProcessCommandLine {
     }
 
     for ($index = 1; $index -lt $arguments.Count; $index++) {
-        if ($arguments[$index] -iin @('-Command', '-c', '-EncodedCommand', '-enc')) {
+        if ($arguments[$index] -iin @(
+            '-Command'
+            '-c'
+            '-CommandWithArgs'
+            '-cwa'
+            '-EncodedCommand'
+            '-e'
+            '-ec'
+            '-enc'
+            '-EncodedArguments'
+        )) {
             return $false
         }
         if ($arguments[$index] -ine '-File') {
@@ -331,8 +341,8 @@ function Stop-VerifiedGaugeProcess {
         return 'rejected'
     }
 
-    Write-WatchdogEvent 'watchdog_stale_stop_confirmed' @{ processId = $ProcessId; reason = 'stale' }
     Stop-Process -Id $ProcessId -ErrorAction Stop
+    Write-WatchdogEvent 'watchdog_stale_stop_confirmed' @{ processId = $ProcessId; reason = 'stale' }
     Wait-Process -Id $ProcessId -Timeout 10 -ErrorAction SilentlyContinue
     return 'stopped'
 }

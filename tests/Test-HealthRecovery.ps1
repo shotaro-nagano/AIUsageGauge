@@ -86,9 +86,10 @@ foreach ($functionName in $requiredFunctionNames) {
 $matchingCommandLines = @(
     'pwsh.exe -File "C:\app\Start-AIUsageGauge.ps1"',
     'powershell -NoProfile -File C:\app\Start-AIUsageGauge.ps1 -Placement right',
-    'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\app\Start-AIUsageGauge.ps1',
+    'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -NonInteractive -File C:\app\Start-AIUsageGauge.ps1',
     '"C:\Program Files\PowerShell\7\pwsh.exe" -NoLogo -File ''C:\app dir\Start-AIUsageGauge.ps1'' -RefreshSeconds 30',
-    'PWSH -File Start-AIUsageGauge.ps1'
+    'PWSH -File Start-AIUsageGauge.ps1',
+    'pwsh.exe -File C:\app\Start-AIUsageGauge.ps1 -e script-value -CommandWithArgs script-value'
 )
 foreach ($commandLine in $matchingCommandLines) {
     Assert-True (Test-GaugeProcessCommandLine $commandLine) "Gauge command line must match: $commandLine"
@@ -100,6 +101,11 @@ $nonMatchingCommandLines = @(
     'pwsh.exe -c "Write-Host ready" -File C:\app\Start-AIUsageGauge.ps1',
     'pwsh.exe -EncodedCommand AAA -File C:\app\Start-AIUsageGauge.ps1',
     'pwsh.exe -enc AAA -File C:\app\Start-AIUsageGauge.ps1',
+    'pwsh.exe -e AAA -File C:\app\Start-AIUsageGauge.ps1',
+    'pwsh.exe -ec AAA -File C:\app\Start-AIUsageGauge.ps1',
+    'pwsh.exe -CommandWithArgs "Write-Host ready" -File C:\app\Start-AIUsageGauge.ps1',
+    'pwsh.exe -cwa "Write-Host ready" -File C:\app\Start-AIUsageGauge.ps1',
+    'pwsh.exe -EncodedArguments AAA -File C:\app\Start-AIUsageGauge.ps1',
     'pwsh.exe -File "C:\app\Watch-AIUsageGaugeHealth.ps1"',
     'powershell.exe -File C:\app\Start-AIUsageGauge.ps1x',
     'pwsh.exe -File C:\app\another.ps1 Start-AIUsageGauge.ps1',
@@ -254,6 +260,21 @@ Assert-True ($stopCommands[0].Extent.Text -match '^Stop-Process\s+-Id\s+\$Proces
 Assert-False ($stopCommands[0].Extent.Text -match '-Name\b') 'Watchdog must never stop processes by name'
 Assert-True ($stopCommands[0].Extent.StartOffset -gt $stopVerifiedAst.Extent.StartOffset -and
     $stopCommands[0].Extent.EndOffset -lt $stopVerifiedAst.Extent.EndOffset) 'The sole Stop-Process call must be isolated in Stop-VerifiedGaugeProcess'
+$commandValidationGuard = @($stopVerifiedAst.FindAll({
+    param($ast)
+    $ast -is [System.Management.Automation.Language.IfStatementAst] -and
+        $ast.Extent.Text -match 'Test-GaugeProcessCommandLine'
+}, $true)) | Select-Object -Last 1
+Assert-True ($null -ne $commandValidationGuard) 'Final command-line validation guard is missing'
+$guardEndInFunction = $commandValidationGuard.Extent.EndOffset - $stopVerifiedAst.Extent.StartOffset
+$stopStartInFunction = $stopCommands[0].Extent.StartOffset - $stopVerifiedAst.Extent.StartOffset
+$betweenValidationAndStop = $stopVerifiedText.Substring(
+    $guardEndInFunction,
+    $stopStartInFunction - $guardEndInFunction
+)
+Assert-True ([string]::IsNullOrWhiteSpace($betweenValidationAndStop)) 'No event logging, rotation, sleep, or external I/O may occur between successful final validation and Stop-Process'
+$stopConfirmedEventIndex = $stopVerifiedText.IndexOf("Write-WatchdogEvent 'watchdog_stale_stop_confirmed'")
+Assert-True ($stopConfirmedEventIndex -gt $stopStartInFunction) 'The confirmed-stop event must be written only after Stop-Process succeeds'
 
 $sleepIndex = $recoveryText.IndexOf('Start-Sleep')
 $confirmationHealthIndex = $recoveryText.IndexOf('Read-GaugeHealthState', $sleepIndex + 1)

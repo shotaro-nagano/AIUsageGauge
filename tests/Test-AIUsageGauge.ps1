@@ -286,6 +286,18 @@ Assert-True ($watchdogStopCommands[0].Extent.Text -match '^Stop-Process\s+-Id\s+
 Assert-True ($watchdogStopCommands[0].Extent.Text -notmatch '-Name\b') 'Watchdog must never stop all PowerShell processes by name'
 Assert-True ($watchdogStopCommands[0].Extent.StartOffset -gt $stopVerifiedAst.Extent.StartOffset -and
     $watchdogStopCommands[0].Extent.EndOffset -lt $stopVerifiedAst.Extent.EndOffset) 'The sole Stop-Process call must be isolated in Stop-VerifiedGaugeProcess'
+$finalCommandGuard = @($stopVerifiedAst.FindAll({
+    param($ast)
+    $ast -is [System.Management.Automation.Language.IfStatementAst] -and
+        $ast.Extent.Text -match 'Test-GaugeProcessCommandLine'
+}, $true)) | Select-Object -Last 1
+Assert-True ($null -ne $finalCommandGuard) 'Final command-line validation guard is missing'
+$finalGuardEnd = $finalCommandGuard.Extent.EndOffset - $stopVerifiedAst.Extent.StartOffset
+$stopCommandStart = $watchdogStopCommands[0].Extent.StartOffset - $stopVerifiedAst.Extent.StartOffset
+$preStopText = $stopVerifiedText.Substring($finalGuardEnd, $stopCommandStart - $finalGuardEnd)
+Assert-True ([string]::IsNullOrWhiteSpace($preStopText)) 'Final PID/start/command validation must be immediately adjacent to Stop-Process'
+$confirmedEventIndex = $stopVerifiedText.IndexOf("Write-WatchdogEvent 'watchdog_stale_stop_confirmed'")
+Assert-True ($confirmedEventIndex -gt $stopCommandStart) 'Confirmed-stop event logging must occur after Stop-Process succeeds'
 $healthRereadIndex = $confirmedRecoveryText.LastIndexOf('Read-GaugeHealthState')
 $stopInvocationIndex = $confirmedRecoveryText.LastIndexOf('Stop-VerifiedGaugeProcess')
 Assert-True ($healthRereadIndex -ge 0 -and $healthRereadIndex -lt $stopInvocationIndex) 'Confirmation must reread health before final stop verification'
