@@ -78,7 +78,7 @@ $ClaudeConfigDir = if ([string]::IsNullOrWhiteSpace($env:CLAUDE_CONFIG_DIR)) {
     $env:CLAUDE_CONFIG_DIR
 }
 $ClaudeCredsPath = Join-Path $ClaudeConfigDir '.credentials.json'
-$ClaudeApiUri = 'https://api.anthropic.com/v1/messages'
+$ClaudeUsageUri = 'https://api.anthropic.com/api/oauth/usage'
 $ClaudeRefreshHelperPath = Join-Path $ScriptDir 'Invoke-ClaudeOAuthRefresh.ps1'
 $ClaudeRefreshHiddenLauncherPath = Join-Path $ScriptDir 'Invoke-ClaudeOAuthRefresh-hidden.vbs'
 $ClaudeRefreshTaskInstallerPath = Join-Path $ScriptDir 'Install-ClaudeOAuthRefreshTask.ps1'
@@ -515,6 +515,39 @@ function Invoke-ClaudeTokenRefresh($Creds) {
     return $token
 }
 
+function Convert-ClaudeResetToSeconds {
+    param($ResetAt, [DateTimeOffset]$Now = [DateTimeOffset]::UtcNow)
+
+    if ($null -eq $ResetAt -or [string]::IsNullOrWhiteSpace([string]$ResetAt)) {
+        return $null
+    }
+
+    $reset = [DateTimeOffset]::Parse([string]$ResetAt)
+    return [Math]::Max(0, [int][Math]::Ceiling(($reset - $Now).TotalSeconds))
+}
+
+function Convert-ClaudeUsageResponse {
+    param($UsageResponse, [DateTimeOffset]$Now = [DateTimeOffset]::UtcNow)
+
+    function Convert-Remaining($Value, [string]$Name) {
+        if ($null -eq $Value) { return $null }
+        try { $used = [double]$Value } catch { throw "$Name must be numeric." }
+        return Clamp-Percent ([int][Math]::Round(100 - $used))
+    }
+
+    $fable = @($UsageResponse.limits) | Where-Object {
+        $_.kind -ieq 'weekly_scoped' -and $_.scope.model.display_name -ieq 'Fable'
+    } | Select-Object -First 1
+
+    [pscustomobject]@{
+        FiveHourRemaining = Convert-Remaining $UsageResponse.five_hour.utilization 'five_hour.utilization'
+        SevenDayRemaining = Convert-Remaining $UsageResponse.seven_day.utilization 'seven_day.utilization'
+        FableRemaining = if ($null -eq $fable) { $null } else { Convert-Remaining $fable.percent 'Fable percent' }
+        FiveHourReset = Convert-ClaudeResetToSeconds $UsageResponse.five_hour.resets_at $Now
+        SevenDayReset = Convert-ClaudeResetToSeconds $UsageResponse.seven_day.resets_at $Now
+        UpdatedAt = Get-Date
+    }
+}
 
 function Get-ClaudeUsage {
     if (!(Test-Path -LiteralPath $ClaudeCredsPath)) {
@@ -568,31 +601,10 @@ function Get-ClaudeUsage {
 
     $headers = @{
         Authorization = "Bearer $token"
-        'anthropic-version' = '2023-06-01'
-        'content-type' = 'application/json'
         'anthropic-client-name' = 'claude-code'
     }
-    $body = (@{
-        model = 'claude-haiku-4-5-20251001'
-        max_tokens = 1
-        messages = @(@{ role = 'user'; content = 'hi' })
-    } | ConvertTo-Json -Compress)
-
-    $resp = Invoke-WebRequest -Uri $ClaudeApiUri -Method POST -Headers $headers -Body $body -TimeoutSec 20
-
-    $util5h = [double](($resp.Headers['anthropic-ratelimit-unified-5h-utilization'] | Select-Object -First 1) ?? '0')
-    $util7d = [double](($resp.Headers['anthropic-ratelimit-unified-7d-utilization'] | Select-Object -First 1) ?? '0')
-    $reset5hTs = ($resp.Headers['anthropic-ratelimit-unified-5h-reset'] | Select-Object -First 1)
-    $reset7dTs = ($resp.Headers['anthropic-ratelimit-unified-7d-reset'] | Select-Object -First 1)
-    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-
-    [pscustomobject]@{
-        FiveHourRemaining = Clamp-Percent ([int]([Math]::Round((1 - $util5h) * 100)))
-        SevenDayRemaining = Clamp-Percent ([int]([Math]::Round((1 - $util7d) * 100)))
-        FiveHourReset = if ($reset5hTs) { [Math]::Max(0, [long]$reset5hTs - $now) } else { 0 }
-        SevenDayReset = if ($reset7dTs) { [Math]::Max(0, [long]$reset7dTs - $now) } else { 0 }
-        UpdatedAt = Get-Date
-    }
+    $usageResponse = Invoke-RestMethod -Uri $ClaudeUsageUri -Method GET -Headers $headers -TimeoutSec 20
+    return Convert-ClaudeUsageResponse -UsageResponse $usageResponse
 }
 
 function Start-ClaudeRelogin {

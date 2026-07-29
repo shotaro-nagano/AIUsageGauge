@@ -41,9 +41,29 @@ $watchdog = Get-Content -Raw -LiteralPath $watchdogScript
 $appInstaller = Get-Content -Raw -LiteralPath $appInstallerScript
 $settings = Get-Content -Raw -LiteralPath $settingsFile
 
+$tokens = $null
+$parseErrors = $null
+$startAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    $startScript,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+Assert-True ($parseErrors.Count -eq 0) 'Start-AIUsageGauge.ps1 must parse successfully'
+$getClaudeUsageAst = $startAst.Find({
+    param($ast)
+    $ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $ast.Name -eq 'Get-ClaudeUsage'
+}, $true)
+Assert-True ($null -ne $getClaudeUsageAst) 'Get-ClaudeUsage function is missing'
+$getClaudeUsageText = $getClaudeUsageAst.Extent.Text
+
 Assert-True ($start -match 'Global\\AIUsageGauge') 'Start script must create a named mutex'
 Assert-True ($start -match '再ログイン要') 'Expired Claude auth must show a relogin-required label'
 Assert-True ($start -notmatch 'Invoke-RestMethod\s+-Uri\s+[''"]https://platform\.claude\.com/v1/oauth/token') 'Gauge must not directly call the Claude OAuth token endpoint'
+Assert-True ($start -match '\$ClaudeUsageUri\s*=\s*[''"]https://api\.anthropic\.com/api/oauth/usage[''"]') 'Claude usage must use the approved Anthropic host and path'
+Assert-True ($getClaudeUsageText -match 'Invoke-RestMethod\s+-Uri\s+\$ClaudeUsageUri\s+-Method\s+GET\b') 'Get-ClaudeUsage must use Invoke-RestMethod with GET'
+Assert-True ($getClaudeUsageText -match '[''"]anthropic-client-name[''"]\s*=\s*[''"]claude-code[''"]') 'Get-ClaudeUsage must identify the Claude Code client'
+Assert-True ($getClaudeUsageText -notmatch '/v1/messages') 'Get-ClaudeUsage must not call the Messages endpoint'
 Assert-True ($start -match 'Invoke-ClaudeOAuthRefresh\.ps1') 'Gauge must delegate Claude OAuth refresh to the helper script'
 Assert-True ($start -match 'Invoke-ClaudeOAuthRefresh-hidden\.vbs') 'Gauge must use the hidden refresh launcher for foreground refresh attempts'
 Assert-True ($start -notmatch '&\s*\$pwsh\s+-NoProfile\s+-ExecutionPolicy\s+Bypass\s+-File\s+\$ClaudeRefreshHelperPath') 'Gauge must not launch pwsh.exe directly for Claude refresh'
