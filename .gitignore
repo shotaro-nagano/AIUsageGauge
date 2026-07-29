@@ -2,6 +2,7 @@
 .codex/
 .claude/
 .superpowers/
+.worktrees/
 auth.json
 .credentials.json
 .env
