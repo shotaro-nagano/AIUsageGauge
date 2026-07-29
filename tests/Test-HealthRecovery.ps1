@@ -89,7 +89,7 @@ $matchingCommandLines = @(
     'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -NonInteractive -File C:\app\Start-AIUsageGauge.ps1',
     '"C:\Program Files\PowerShell\7\pwsh.exe" -NoLogo -File ''C:\app dir\Start-AIUsageGauge.ps1'' -RefreshSeconds 30',
     'PWSH -File Start-AIUsageGauge.ps1',
-    'pwsh.exe -File C:\app\Start-AIUsageGauge.ps1 -e script-value -en script-value -enco script-value -CommandWithArgs script-value -cwa script-value -EncodedArguments script-value'
+    'pwsh.exe -File C:\app\Start-AIUsageGauge.ps1 -e script-value -en script-value -enco script-value -CommandWithArgs script-value -cwa script-value -EncodedArguments script-value /c script-value /EncodedCommand script-value'
 )
 foreach ($commandLine in $matchingCommandLines) {
     Assert-True (Test-GaugeProcessCommandLine $commandLine) "Gauge command line must match: $commandLine"
@@ -108,6 +108,7 @@ $nonMatchingCommandLines = @(
     'pwsh.exe -CommandWithArgs "Write-Host ready" -File C:\app\Start-AIUsageGauge.ps1',
     'pwsh.exe -cwa "Write-Host ready" -File C:\app\Start-AIUsageGauge.ps1',
     'pwsh.exe -EncodedArguments AAA -File C:\app\Start-AIUsageGauge.ps1',
+    'pwsh.exe /File C:\app\Start-AIUsageGauge.ps1',
     'pwsh.exe -File "C:\app\Watch-AIUsageGaugeHealth.ps1"',
     'powershell.exe -File C:\app\Start-AIUsageGauge.ps1x',
     'pwsh.exe -File C:\app\another.ps1 Start-AIUsageGauge.ps1',
@@ -139,8 +140,10 @@ foreach ($selectorAlias in @('c', 'cwa', 'e', 'ec', 'enc')) {
 
 foreach ($selectorToken in @($executionSelectorTokens | Sort-Object)) {
     foreach ($caseVariant in @($selectorToken.ToLowerInvariant(), $selectorToken.ToUpperInvariant())) {
-        $selectorCommandLine = 'pwsh.exe -{0} selector-payload -File C:\app\Start-AIUsageGauge.ps1' -f $caseVariant
-        Assert-False (Test-GaugeProcessCommandLine $selectorCommandLine) "Execution selector prefix must not match: -$caseVariant"
+        foreach ($optionPrefix in @('-', '/')) {
+            $selectorCommandLine = 'pwsh.exe {0}{1} selector-payload -File C:\app\Start-AIUsageGauge.ps1' -f $optionPrefix, $caseVariant
+            Assert-False (Test-GaugeProcessCommandLine $selectorCommandLine) "Execution selector prefix must not match: $optionPrefix$caseVariant"
+        }
     }
 }
 
