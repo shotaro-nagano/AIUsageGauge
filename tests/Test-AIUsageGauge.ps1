@@ -83,6 +83,62 @@ $updatePositionAst = $startAst.Find({
 }, $true)
 Assert-True ($null -ne $updatePositionAst) 'Update-Position function is missing'
 $updatePositionText = $updatePositionAst.Extent.Text
+$writeHealthAst = $startAst.Find({
+    param($ast)
+    $ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $ast.Name -eq 'Write-GaugeHealthState'
+}, $true)
+Assert-True ($null -ne $writeHealthAst) 'Write-GaugeHealthState function is missing'
+$writeHealthText = $writeHealthAst.Extent.Text
+$healthStateAssignment = $startAst.Find({
+    param($ast)
+    $ast -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $ast.Left.Extent.Text -eq '$script:GaugeHealthState'
+}, $true)
+Assert-True ($null -ne $healthStateAssignment) 'Fixed gauge health state initialization is missing'
+$healthStateTable = $healthStateAssignment.Right.Find({
+    param($ast)
+    $ast -is [System.Management.Automation.Language.HashtableAst]
+}, $true)
+Assert-True ($null -ne $healthStateTable) 'Gauge health state must be a fixed hashtable'
+$healthStateKeys = @($healthStateTable.KeyValuePairs | ForEach-Object { $_.Item1.Value })
+$expectedHealthStateKeys = @(
+    'schemaVersion'
+    'pid'
+    'processStartedAt'
+    'uiHeartbeatAt'
+    'lastUpdateAttemptAt'
+    'codex'
+    'claude'
+    'lastScreenCorrectionAt'
+)
+Assert-True ($healthStateKeys.Count -eq $expectedHealthStateKeys.Count) 'Gauge health state must contain only the fixed top-level schema'
+foreach ($healthStateKey in $expectedHealthStateKeys) {
+    Assert-True ($healthStateKeys -contains $healthStateKey) "Gauge health state is missing $healthStateKey"
+}
+
+$watchdogTokens = $null
+$watchdogParseErrors = $null
+$watchdogAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    $watchdogScript,
+    [ref]$watchdogTokens,
+    [ref]$watchdogParseErrors
+)
+Assert-True ($watchdogParseErrors.Count -eq 0) 'Watch-AIUsageGaugeHealth.ps1 must parse successfully'
+$getGaugeProcessesAst = $watchdogAst.Find({
+    param($ast)
+    $ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $ast.Name -eq 'Get-GaugeProcesses'
+}, $true)
+$confirmedRecoveryAst = $watchdogAst.Find({
+    param($ast)
+    $ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $ast.Name -eq 'Invoke-ConfirmedGaugeRecovery'
+}, $true)
+Assert-True ($null -ne $getGaugeProcessesAst) 'Get-GaugeProcesses function is missing'
+Assert-True ($null -ne $confirmedRecoveryAst) 'Invoke-ConfirmedGaugeRecovery function is missing'
+$getGaugeProcessesText = $getGaugeProcessesAst.Extent.Text
+$confirmedRecoveryText = $confirmedRecoveryAst.Extent.Text
 
 Assert-True ($start -match 'Global\\AIUsageGauge') 'Start script must create a named mutex'
 Assert-True ($start -match '再ログイン要') 'Expired Claude auth must show a relogin-required label'
@@ -117,6 +173,7 @@ Assert-True ($updatePositionText -match '(?s)\$desiredLeft\s*=\s*\$base\.Left\s*
 Assert-True ($updatePositionText -match 'ConvertTo-VisibleGaugePosition') 'Update-Position must clamp the desired gauge position to an active monitor'
 Assert-True ($updatePositionText -match '(?s)\$screenMargin\s*=\s*6.*?ScreenMargin') 'Position clamping must default ScreenMargin to 6 before Task 5 adds the setting'
 Assert-True ($updatePositionText -match '(?s)if\s*\(\$safePosition\.Corrected\)\s*\{.*?\$script:ManualOffsetX\s*=\s*\$safePosition\.Left\s*-\s*\$base\.Left.*?\$script:ManualOffsetY\s*=\s*\$safePosition\.Top\s*-\s*\$base\.Top.*?Save-GaugeUiState.*?window_position_corrected') 'A corrected position must update and persist offsets before writing its diagnostic event'
+Assert-True ($updatePositionText -match '(?s)if\s*\(\$safePosition\.Corrected\)\s*\{.*?lastScreenCorrectionAt.*?Write-GaugeHealthState') 'A corrected position must update and persist health state'
 Assert-True ($start -match 'Update-Position\s+-PersistPosition') 'Drag completion must run clamping before persisting the position'
 Assert-True ($start -notmatch '(?is)Get-ChildItem\b.{0,200}(?:auth|credential|\.codex|\.claude)') 'Gauge auth lookup must not scan directories broadly'
 Assert-True ($start -match 'Show-AIUsageGaugeNotification') 'Gauge must support Windows notifications'
@@ -124,6 +181,19 @@ Assert-True ($start -match 'NotifyIcon') 'Gauge notifications must use a Windows
 Assert-True ($start -match 'Test-NotificationAllowed') 'Gauge must dedupe low-remaining notifications'
 Assert-True ($start -match 'stale') 'Gauge must visibly mark stale usage values'
 Assert-True ($start -match 'Get-LastHealthEventSummary') 'Gauge UI must expose recent watchdog/repair summary'
+Assert-True ($start -match '\$HealthStatePath\s*=\s*Join-Path\s+\$RefreshStateDir\s+[''"]health\.json[''"]') 'Gauge health.json must stay under the fixed LocalAppData AIUsageGauge directory'
+Assert-True ($writeHealthText -match '\$tempPath\s*=\s*"\$HealthStatePath\.\$PID\.tmp"') 'Health writes must use a per-PID temporary file'
+Assert-True ($writeHealthText -match '\[System\.IO\.File\]::Move\(\$tempPath,\s*\$HealthStatePath,\s*\$true\)') 'Health writes must atomically replace health.json'
+Assert-True ($writeHealthText -match '(?s)catch\s*\{.*?Remove-Item\s+-LiteralPath\s+\$tempPath.*?TotalMinutes\s*-ge\s*5.*?health_state_write_failed') 'Failed health writes must clean temporary files and rate-limit diagnostics to five minutes'
+Assert-True ($start -match '(?s)\$healthHeartbeatSeconds\s*=\s*30.*?HealthHeartbeatSeconds') 'Gauge heartbeat must default to 30 seconds before Task 5 adds the setting'
+Assert-True ($start -match '(?s)DispatcherTimer.*?uiHeartbeatAt.*?Write-GaugeHealthState') 'A dispatcher timer must persist the UI heartbeat'
+Assert-True ($updateUsageText -match '(?s)lastUpdateAttemptAt.*?Write-GaugeHealthState') 'Every usage update must persist lastUpdateAttemptAt'
+foreach ($healthCategory in @('starting', 'ok', 'off', 'auth', 'rate_limited', 'unavailable')) {
+    $healthCategoryPattern = '[''"]{0}[''"]' -f [regex]::Escape($healthCategory)
+    Assert-True ($start -match $healthCategoryPattern) "Gauge health must support only the fixed $healthCategory service category"
+}
+$healthImplementationText = $healthStateAssignment.Extent.Text + $writeHealthText
+Assert-True ($healthImplementationText -notmatch '(?i)token|authorization|response|request.body|account|organi[sz]ation|prompt|Get-ChildItem') 'Health state and writer must not contain secrets, API payloads, identity data, prompts, or path scans'
 Assert-True ($start -notmatch '\$primaryRow\b') 'Codex short row must be removed'
 $codexLongRows = [regex]::Matches($start, '(?m)^\s*\$weeklyRow\s*=\s*New-Row\s+''long''\s+0\s+''Codex''\s*$')
 Assert-True ($codexLongRows.Count -eq 1) 'Exactly one Codex long row is required'
@@ -194,7 +264,25 @@ Assert-True ($watchdog -match 'Install-ClaudeOAuthRefreshTask\.ps1') 'Watchdog m
 Assert-True ($watchdog -match '\[switch\]\$SkipClaudeRefreshTaskCheck') 'Watchdog must support skipping refresh task checks when called from that task'
 Assert-True ($watchdog -match 'Get-CimInstance\s+Win32_Process') 'Watchdog must inspect running Gauge processes'
 Assert-True ($watchdog -match 'Start-AIUsageGauge\.ps1') 'Watchdog process matching must be scoped to Start-AIUsageGauge.ps1'
-Assert-True ($watchdog -notmatch 'Stop-Process') 'Watchdog must not kill processes automatically'
+Assert-True ($watchdog -match '\$HealthStatePath\s*=\s*Join-Path\s+\$EventLogDir\s+[''"]health\.json[''"]') 'Watchdog health.json must stay under the fixed LocalAppData AIUsageGauge directory'
+Assert-True ($watchdog -match '(?s)HealthStaleMinutes\s*=\s*10.*?HeartbeatConfirmationSeconds\s*=\s*10') 'Watchdog recovery settings must default safely before Task 5 adds keys'
+Assert-True ($getGaugeProcessesText -match 'Test-GaugeProcessCommandLine') 'Gauge discovery must use strict -File command-line validation'
+$watchdogStopCommands = @($watchdogAst.FindAll({
+    param($ast)
+    $ast -is [System.Management.Automation.Language.CommandAst] -and
+        $ast.GetCommandName() -eq 'Stop-Process'
+}, $true))
+Assert-True ($watchdogStopCommands.Count -eq 1) 'Watchdog must have exactly one confirmed Stop-Process call'
+Assert-True ($watchdogStopCommands[0].Extent.Text -match '^Stop-Process\s+-Id\s+\$ProcessId(?:\s|$)') 'Watchdog must stop only the exact confirmed ProcessId'
+Assert-True ($watchdogStopCommands[0].Extent.Text -notmatch '-Name\b') 'Watchdog must never stop all PowerShell processes by name'
+$healthRereadIndex = $confirmedRecoveryText.LastIndexOf('Read-GaugeHealthState')
+$freshCimIndex = $confirmedRecoveryText.LastIndexOf('Get-CimInstance Win32_Process')
+$pidEqualityIndex = $confirmedRecoveryText.LastIndexOf('$verifiedProcess.ProcessId')
+$commandRevalidationIndex = $confirmedRecoveryText.LastIndexOf('Test-GaugeProcessCommandLine')
+$confirmedStopIndex = $confirmedRecoveryText.IndexOf('Stop-Process')
+Assert-True ($healthRereadIndex -ge 0 -and $healthRereadIndex -lt $confirmedStopIndex) 'Confirmation must reread health before stopping'
+Assert-True ($freshCimIndex -ge 0 -and $freshCimIndex -lt $pidEqualityIndex) 'Final recovery must freshly query Win32_Process by exact PID'
+Assert-True ($pidEqualityIndex -lt $commandRevalidationIndex -and $commandRevalidationIndex -lt $confirmedStopIndex) 'Final recovery must verify returned PID and command line before stopping'
 Assert-True ($watchdog -match 'Write-WatchdogEvent') 'Watchdog must write token-free diagnostic events'
 Assert-True ($watchdog -match 'Limit-WatchdogEventLog') 'Watchdog must rotate diagnostic logs'
 Assert-True ($watchdog -match 'LogRetentionDays') 'Watchdog log rotation must use day-based retention'

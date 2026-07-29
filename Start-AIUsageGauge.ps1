@@ -90,10 +90,29 @@ $RefreshStateDir = Join-Path $env:LOCALAPPDATA 'AIUsageGauge'
 $RefreshStatePath = Join-Path $RefreshStateDir 'claude-refresh-state.json'
 $EventLogPath = Join-Path $RefreshStateDir 'events.log'
 $UiStatePath = Join-Path $RefreshStateDir 'ui-state.json'
+$HealthStatePath = Join-Path $RefreshStateDir 'health.json'
 $MaxEventLogBytes = 262144
 $script:NotificationState = @{}
 $script:LastCodexUsage = $null
 $script:LastClaudeUsage = $null
+$script:LastHealthWriteFailureEventAt = [DateTimeOffset]::MinValue
+$currentGaugeProcess = [System.Diagnostics.Process]::GetCurrentProcess()
+$script:GaugeHealthState = [ordered]@{
+    schemaVersion = 1
+    pid = $PID
+    processStartedAt = ([DateTimeOffset]::new($currentGaugeProcess.StartTime)).ToUniversalTime().ToString('o')
+    uiHeartbeatAt = [DateTimeOffset]::UtcNow.ToString('o')
+    lastUpdateAttemptAt = $null
+    codex = [ordered]@{
+        status = 'starting'
+        lastSuccessAt = $null
+    }
+    claude = [ordered]@{
+        status = 'starting'
+        lastSuccessAt = $null
+    }
+    lastScreenCorrectionAt = $null
+}
 
 function Get-EventLogRetentionCutoffDate {
     $retentionDays = [Math]::Max(1, [int]($Settings.LogRetentionDays ?? 2))
@@ -164,6 +183,54 @@ function Write-AIUsageGaugeEvent {
 
         ($entry | ConvertTo-Json -Compress) | Add-Content -LiteralPath $EventLogPath -Encoding UTF8
     } catch {}
+}
+
+function Write-GaugeHealthState {
+    $tempPath = "$HealthStatePath.$PID.tmp"
+    try {
+        if (!(Test-Path -LiteralPath $RefreshStateDir)) {
+            New-Item -ItemType Directory -Force -Path $RefreshStateDir | Out-Null
+        }
+
+        $script:GaugeHealthState | ConvertTo-Json -Depth 4 |
+            Set-Content -LiteralPath $tempPath -Encoding UTF8
+        [System.IO.File]::Move($tempPath, $HealthStatePath, $true)
+    } catch {
+        Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        $now = [DateTimeOffset]::UtcNow
+        if (($now - $script:LastHealthWriteFailureEventAt).TotalMinutes -ge 5) {
+            $script:LastHealthWriteFailureEventAt = $now
+            Write-AIUsageGaugeEvent 'health_state_write_failed'
+        }
+    }
+}
+
+function Set-GaugeServiceHealth {
+    param(
+        [ValidateSet('codex', 'claude')]
+        [string]$Service,
+        [ValidateSet('starting', 'ok', 'off', 'auth', 'rate_limited', 'unavailable')]
+        [string]$Status,
+        [DateTimeOffset]$SuccessAt = [DateTimeOffset]::MinValue
+    )
+
+    $serviceState = $script:GaugeHealthState[$Service]
+    $serviceState.status = $Status
+    if ($Status -eq 'ok') {
+        $serviceState.lastSuccessAt = $SuccessAt.ToUniversalTime().ToString('o')
+    }
+}
+
+function Get-GaugeServiceFailureStatus {
+    param([string]$Message)
+
+    if ($Message -match 'AIUG_TOKEN_EXPIRED|401|Unauthorized|auth|access token|credentials file') {
+        return 'auth'
+    }
+    if ($Message -match '429|rate.limit|Too Many|Rate') {
+        return 'rate_limited'
+    }
+    return 'unavailable'
 }
 
 function Get-RefreshState {
@@ -1058,12 +1125,16 @@ function Update-Position {
             left = [Math]::Round($safePosition.Left, 1)
             top = [Math]::Round($safePosition.Top, 1)
         }
+        $script:GaugeHealthState.lastScreenCorrectionAt = [DateTimeOffset]::UtcNow.ToString('o')
+        Write-GaugeHealthState
     } elseif ($PersistPosition) {
         Save-GaugeUiState -ManualOffsetX $script:ManualOffsetX -ManualOffsetY $script:ManualOffsetY
     }
 }
 
 function Update-Usage {
+    $script:GaugeHealthState.lastUpdateAttemptAt = [DateTimeOffset]::UtcNow.ToString('o')
+    Write-GaugeHealthState
     $outer.ToolTip = Get-LastHealthEventSummary
 
     # Codex
@@ -1071,6 +1142,7 @@ function Update-Usage {
         if (-not [bool]$Settings.EnableCodex) {
             $title.Text = 'Codex rate'
             $footer.Text = 'off'
+            Set-GaugeServiceHealth -Service codex -Status off
         } else {
             $usage = Get-CodexUsage
             $script:LastCodexUsage = $usage
@@ -1089,8 +1161,10 @@ function Update-Usage {
                 $title.Text = 'Codex rate'
                 $outer.BorderBrush = '#3c424c'
             }
+            Set-GaugeServiceHealth -Service codex -Status ok -SuccessAt ([DateTimeOffset]::UtcNow)
         }
     } catch {
+        Set-GaugeServiceHealth -Service codex -Status (Get-GaugeServiceFailureStatus $_.Exception.Message)
         $title.Text = 'Codex rate'
         if ($null -ne $script:LastCodexUsage) {
             $footer.Text = Format-StaleAge $script:LastCodexUsage.UpdatedAt
@@ -1106,6 +1180,7 @@ function Update-Usage {
             $claudeTitle.Text = 'Claude rate'
             $claudeFooter.Text = 'off'
             $script:ClaudeNeedsRelogin = $false
+            Set-GaugeServiceHealth -Service claude -Status off
         } else {
             $cl = Get-ClaudeUsage
             $script:LastClaudeUsage = $cl
@@ -1131,10 +1206,12 @@ function Update-Usage {
             $claudeFooter.ToolTip = Get-LastHealthEventSummary
             $claudeTitle.Text = 'Claude rate'
             $script:ClaudeNeedsRelogin = $false
+            Set-GaugeServiceHealth -Service claude -Status ok -SuccessAt ([DateTimeOffset]::UtcNow)
         }
     } catch {
         $claudeTitle.Text = 'Claude rate'
         $errMsg = $_.Exception.Message
+        Set-GaugeServiceHealth -Service claude -Status (Get-GaugeServiceFailureStatus $errMsg)
         if ($errMsg -match 'AIUG_TOKEN_EXPIRED|401|Unauthorized') {
             Set-RowUnavailable $claude5hRow
             Set-RowUnavailable $claude7dRow
@@ -1154,8 +1231,11 @@ function Update-Usage {
             $script:ClaudeNeedsRelogin = $false
         }
     }
+
+    Write-GaugeHealthState
 }
 
+Write-GaugeHealthState
 Ensure-ClaudeRefreshTask
 
 $positionTimer = New-Object System.Windows.Threading.DispatcherTimer
@@ -1167,6 +1247,26 @@ $usageTimer = New-Object System.Windows.Threading.DispatcherTimer
 $usageTimer.Interval = [TimeSpan]::FromSeconds([Math]::Max(15, $RefreshSeconds))
 $usageTimer.Add_Tick({ Update-Usage })
 $usageTimer.Start()
+
+$healthHeartbeatSeconds = 30
+if ($Settings.PSObject.Properties.Name -contains 'HealthHeartbeatSeconds') {
+    try {
+        $configuredHealthHeartbeatSeconds = [int]$Settings.HealthHeartbeatSeconds
+        if ($configuredHealthHeartbeatSeconds -gt 0) {
+            $healthHeartbeatSeconds = $configuredHealthHeartbeatSeconds
+        }
+    } catch {
+        $healthHeartbeatSeconds = 30
+    }
+}
+
+$healthTimer = New-Object System.Windows.Threading.DispatcherTimer
+$healthTimer.Interval = [TimeSpan]::FromSeconds($healthHeartbeatSeconds)
+$healthTimer.Add_Tick({
+    $script:GaugeHealthState.uiHeartbeatAt = [DateTimeOffset]::UtcNow.ToString('o')
+    Write-GaugeHealthState
+})
+$healthTimer.Start()
 
 $window.Add_SourceInitialized({
     Update-Position
