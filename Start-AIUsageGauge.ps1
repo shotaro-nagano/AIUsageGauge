@@ -656,9 +656,21 @@ function ConvertTo-VisibleGaugePosition {
     $desiredCenterX = $Left + ($Width / 2)
     $desiredCenterY = $Top + ($Height / 2)
     $selectedArea = $null
-    $minimumDistance = [double]::PositiveInfinity
+    $minimumLogDistance = [double]::PositiveInfinity
 
     foreach ($area in $areas) {
+        $hasRequiredBounds = $true
+        foreach ($boundName in @('Left', 'Top', 'Right', 'Bottom')) {
+            $boundProperty = $area.PSObject.Properties[$boundName]
+            if ($null -eq $boundProperty -or $null -eq $boundProperty.Value) {
+                $hasRequiredBounds = $false
+                break
+            }
+        }
+        if (-not $hasRequiredBounds) {
+            continue
+        }
+
         try {
             $rawAreaLeft = [double]$area.Left
             $rawAreaTop = [double]$area.Top
@@ -677,22 +689,33 @@ function ConvertTo-VisibleGaugePosition {
             continue
         }
 
-        $areaLeft = [Math]::Min($rawAreaLeft, $rawAreaRight)
-        $areaTop = [Math]::Min($rawAreaTop, $rawAreaBottom)
-        $areaRight = [Math]::Max($rawAreaLeft, $rawAreaRight)
-        $areaBottom = [Math]::Max($rawAreaTop, $rawAreaBottom)
-        $nearestX = [Math]::Max($areaLeft, [Math]::Min($desiredCenterX, $areaRight))
-        $nearestY = [Math]::Max($areaTop, [Math]::Min($desiredCenterY, $areaBottom))
-        $distance = [Math]::Max(
-            [Math]::Abs($desiredCenterX - $nearestX),
-            [Math]::Abs($desiredCenterY - $nearestY)
-        )
-        if ([double]::IsNaN($distance)) {
-            $distance = [double]::PositiveInfinity
+        if ($rawAreaRight -le $rawAreaLeft -or $rawAreaBottom -le $rawAreaTop) {
+            continue
         }
 
-        if ($null -eq $selectedArea -or $distance -lt $minimumDistance) {
-            $minimumDistance = $distance
+        $areaLeft = $rawAreaLeft
+        $areaTop = $rawAreaTop
+        $areaRight = $rawAreaRight
+        $areaBottom = $rawAreaBottom
+        $nearestX = [Math]::Max($areaLeft, [Math]::Min($desiredCenterX, $areaRight))
+        $nearestY = [Math]::Max($areaTop, [Math]::Min($desiredCenterY, $areaBottom))
+        $distanceX = [Math]::Abs($desiredCenterX - $nearestX)
+        $distanceY = [Math]::Abs($desiredCenterY - $nearestY)
+        $scale = [Math]::Max($distanceX, $distanceY)
+        if ($scale -eq 0) {
+            $logDistance = [double]::NegativeInfinity
+        } else {
+            $scaledX = $distanceX / $scale
+            $scaledY = $distanceY / $scale
+            $logDistance = [Math]::Log($scale) +
+                (0.5 * [Math]::Log(($scaledX * $scaledX) + ($scaledY * $scaledY)))
+        }
+        if ([double]::IsNaN($logDistance)) {
+            $logDistance = [double]::PositiveInfinity
+        }
+
+        if ($null -eq $selectedArea -or $logDistance -lt $minimumLogDistance) {
+            $minimumLogDistance = $logDistance
             $selectedArea = [pscustomobject]@{
                 Left = $areaLeft
                 Top = $areaTop

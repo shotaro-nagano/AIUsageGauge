@@ -77,6 +77,55 @@ Assert-True (-not $halfDipCorrection.Corrected) 'A correction of exactly 0.5 DIP
 $overHalfDipCorrection = ConvertTo-VisibleGaugePosition -Left 5.4 -Top 120 -Width 142 -Height 132 -WorkingAreas @($primaryArea) -Margin 6
 Assert-True $overHalfDipCorrection.Corrected 'A correction greater than 0.5 DIP must be reported'
 
+$correctnessFailures = [System.Collections.Generic.List[string]]::new()
+$diagonalArea = [pscustomobject]@{
+    Left = 9
+    Top = 9
+    Right = 10
+    Bottom = 10
+}
+$axialArea = [pscustomobject]@{
+    Left = 10
+    Top = -1
+    Right = 11
+    Bottom = 1
+}
+$euclideanNearest = ConvertTo-VisibleGaugePosition -Left -0.5 -Top -0.5 -Width 1 -Height 1 -WorkingAreas @($diagonalArea, $axialArea) -Margin 0
+if ($euclideanNearest.Left -ne 10 -or $euclideanNearest.Top -ne -0.5) {
+    $correctnessFailures.Add("Euclidean distance must select the axial area at (10,0); actual position: $($euclideanNearest.Left),$($euclideanNearest.Top)")
+}
+
+$validMonitor = [pscustomobject]@{
+    Left = 100
+    Top = -10
+    Right = 200
+    Bottom = 10
+}
+$malformedAreas = @(
+    [pscustomobject]@{ Name = 'missing Right'; Area = [pscustomobject]@{ Left = -1; Top = -1; Bottom = 1 } }
+    [pscustomobject]@{ Name = 'null Right'; Area = [pscustomobject]@{ Left = -1; Top = -1; Right = $null; Bottom = 1 } }
+)
+foreach ($case in $malformedAreas) {
+    $malformedResult = ConvertTo-VisibleGaugePosition -Left -0.5 -Top -0.5 -Width 1 -Height 1 -WorkingAreas @($case.Area, $validMonitor) -Margin 0
+    $fitsValidMonitor =
+        $malformedResult.Left -ge $validMonitor.Left -and
+        ($malformedResult.Left + 1) -le $validMonitor.Right -and
+        $malformedResult.Top -ge $validMonitor.Top -and
+        ($malformedResult.Top + 1) -le $validMonitor.Bottom
+    if (-not $fitsValidMonitor) {
+        $correctnessFailures.Add("An area with $($case.Name) must be skipped; actual position: $($malformedResult.Left),$($malformedResult.Top)")
+    }
+}
+
+$onlyMalformed = ConvertTo-VisibleGaugePosition -Left -0.5 -Top -0.5 -Width 1 -Height 1 -WorkingAreas @($malformedAreas[0].Area, $malformedAreas[1].Area) -Margin 0
+if ($onlyMalformed.Left -ne -0.5 -or $onlyMalformed.Top -ne -0.5 -or $onlyMalformed.Corrected) {
+    $correctnessFailures.Add('An all-malformed working-area list must preserve the original position safely')
+}
+
+if ($correctnessFailures.Count -gt 0) {
+    throw ($correctnessFailures -join [Environment]::NewLine)
+}
+
 $negativeMonitor = ConvertTo-VisibleGaugePosition -Left -1500 -Top 100 -Width 142 -Height 132 -WorkingAreas @($primaryArea, $leftArea) -Margin 6
 Assert-Equal -1274 $negativeMonitor.Left 'A negative-coordinate monitor must be selected and clamped at its left margin'
 Assert-Equal 100 $negativeMonitor.Top 'Clamping on a negative-coordinate monitor must preserve a visible top coordinate'
