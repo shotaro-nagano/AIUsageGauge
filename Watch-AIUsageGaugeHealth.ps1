@@ -177,9 +177,13 @@ function Test-GaugeProcessCommandLine {
     $executionSelectorAliases = @('c', 'cwa', 'e', 'ec', 'enc')
 
     for ($index = 1; $index -lt $arguments.Count; $index++) {
-        $optionPrefix = if ($arguments[$index].Length -gt 0) { [string]$arguments[$index][0] } else { '' }
-        if ($optionPrefix -iin @('-', '/') -and $arguments[$index].Length -gt 1) {
+        $optionName = $null
+        if ($arguments[$index].StartsWith('/') -and $arguments[$index].Length -gt 1) {
             $optionName = $arguments[$index].Substring(1)
+        } elseif ($arguments[$index].StartsWith('-')) {
+            $optionName = $arguments[$index].TrimStart('-')
+        }
+        if (-not [string]::IsNullOrWhiteSpace($optionName)) {
             $nameSeparatorIndex = $optionName.IndexOf(':')
             if ($nameSeparatorIndex -ge 0) {
                 $optionName = $optionName.Substring(0, $nameSeparatorIndex)
