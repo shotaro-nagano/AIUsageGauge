@@ -100,7 +100,10 @@ $currentGaugeProcess = [System.Diagnostics.Process]::GetCurrentProcess()
 $script:GaugeHealthState = [ordered]@{
     schemaVersion = 1
     pid = $PID
-    processStartedAt = ([DateTimeOffset]::new($currentGaugeProcess.StartTime)).ToUniversalTime().ToString('o')
+    processStartedAt = ([DateTimeOffset]::new($currentGaugeProcess.StartTime)).ToUniversalTime().ToString(
+        'o',
+        [System.Globalization.CultureInfo]::InvariantCulture
+    )
     uiHeartbeatAt = [DateTimeOffset]::UtcNow.ToString('o')
     lastUpdateAttemptAt = $null
     codex = [ordered]@{
@@ -203,6 +206,22 @@ function Write-GaugeHealthState {
             Write-AIUsageGaugeEvent 'health_state_write_failed'
         }
     }
+}
+
+function Remove-OrphanedGaugeHealthTempFiles {
+    try {
+        if (!(Test-Path -LiteralPath $RefreshStateDir)) {
+            return
+        }
+
+        Get-ChildItem -LiteralPath $RefreshStateDir -Filter 'health.json.*.tmp' -File -ErrorAction Stop |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    } catch {}
+}
+
+function Update-GaugeHeartbeat {
+    $script:GaugeHealthState.uiHeartbeatAt = [DateTimeOffset]::UtcNow.ToString('o')
+    Write-GaugeHealthState
 }
 
 function Set-GaugeServiceHealth {
@@ -1133,6 +1152,16 @@ function Update-Position {
 }
 
 function Update-Usage {
+    if ([bool]$Settings.EnableCodex) {
+        Set-GaugeServiceHealth -Service codex -Status starting
+    } else {
+        Set-GaugeServiceHealth -Service codex -Status off
+    }
+    if ([bool]$Settings.EnableClaude) {
+        Set-GaugeServiceHealth -Service claude -Status starting
+    } else {
+        Set-GaugeServiceHealth -Service claude -Status off
+    }
     $script:GaugeHealthState.lastUpdateAttemptAt = [DateTimeOffset]::UtcNow.ToString('o')
     Write-GaugeHealthState
     $outer.ToolTip = Get-LastHealthEventSummary
@@ -1235,6 +1264,7 @@ function Update-Usage {
     Write-GaugeHealthState
 }
 
+Remove-OrphanedGaugeHealthTempFiles
 Write-GaugeHealthState
 Ensure-ClaudeRefreshTask
 
@@ -1262,11 +1292,16 @@ if ($Settings.PSObject.Properties.Name -contains 'HealthHeartbeatSeconds') {
 
 $healthTimer = New-Object System.Windows.Threading.DispatcherTimer
 $healthTimer.Interval = [TimeSpan]::FromSeconds($healthHeartbeatSeconds)
-$healthTimer.Add_Tick({
-    $script:GaugeHealthState.uiHeartbeatAt = [DateTimeOffset]::UtcNow.ToString('o')
-    Write-GaugeHealthState
-})
+$healthTimer.Add_Tick({ Update-GaugeHeartbeat })
 $healthTimer.Start()
+
+$powerModeChangedHandler = [Microsoft.Win32.PowerModeChangedEventHandler]{
+    param($sender, $eventArgs)
+    if ($eventArgs.Mode -eq [Microsoft.Win32.PowerModes]::Resume) {
+        [void]$window.Dispatcher.BeginInvoke([System.Action]{ Update-GaugeHeartbeat })
+    }
+}
+[Microsoft.Win32.SystemEvents]::add_PowerModeChanged($powerModeChangedHandler)
 
 $window.Add_SourceInitialized({
     Update-Position
@@ -1276,6 +1311,9 @@ $window.Add_SourceInitialized({
 try {
     $null = $window.ShowDialog()
 } finally {
+    if ($null -ne $powerModeChangedHandler) {
+        [Microsoft.Win32.SystemEvents]::remove_PowerModeChanged($powerModeChangedHandler)
+    }
     if ($script:SingleInstanceMutex) {
         $script:SingleInstanceMutex.ReleaseMutex()
         $script:SingleInstanceMutex.Dispose()

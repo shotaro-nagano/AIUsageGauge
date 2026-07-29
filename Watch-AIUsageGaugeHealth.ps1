@@ -14,6 +14,7 @@ $ScriptDir = if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) {
 
 $GaugeHiddenLauncherPath = Join-Path $ScriptDir 'Start-AIUsageGauge-hidden.vbs'
 $GaugeScriptName = 'Start-AIUsageGauge.ps1'
+$GaugeScriptPath = [System.IO.Path]::GetFullPath((Join-Path $ScriptDir $GaugeScriptName))
 $ClaudeRefreshTaskInstallerPath = Join-Path $ScriptDir 'Install-ClaudeOAuthRefreshTask.ps1'
 $EventLogDir = Join-Path $env:LOCALAPPDATA 'AIUsageGauge'
 $EventLogPath = Join-Path $EventLogDir 'events.log'
@@ -114,53 +115,129 @@ function Write-Status {
 function Get-WatchdogRecoverySettings {
     $recoverySettings = [ordered]@{
         HealthStaleMinutes = 10
+        HealthHeartbeatSeconds = 30
         HeartbeatConfirmationSeconds = 10
     }
 
     try {
-        if (!(Test-Path -LiteralPath $SettingsPath)) {
-            return [pscustomobject]$recoverySettings
-        }
-
-        $settings = Get-Content -LiteralPath $SettingsPath -Raw | ConvertFrom-Json
-        if ($settings.PSObject.Properties.Name -contains 'HealthStaleMinutes') {
-            $staleMinutes = [int]$settings.HealthStaleMinutes
-            if ($staleMinutes -gt 0) {
-                $recoverySettings.HealthStaleMinutes = $staleMinutes
+        if (Test-Path -LiteralPath $SettingsPath) {
+            $settings = Get-Content -LiteralPath $SettingsPath -Raw | ConvertFrom-Json
+            if ($settings.PSObject.Properties.Name -contains 'HealthStaleMinutes') {
+                $staleMinutes = [int]$settings.HealthStaleMinutes
+                if ($staleMinutes -gt 0) {
+                    $recoverySettings.HealthStaleMinutes = $staleMinutes
+                }
             }
-        }
-        if ($settings.PSObject.Properties.Name -contains 'HeartbeatConfirmationSeconds') {
-            $confirmationSeconds = [int]$settings.HeartbeatConfirmationSeconds
-            if ($confirmationSeconds -ge 0) {
-                $recoverySettings.HeartbeatConfirmationSeconds = $confirmationSeconds
+            if ($settings.PSObject.Properties.Name -contains 'HeartbeatConfirmationSeconds') {
+                $confirmationSeconds = [int]$settings.HeartbeatConfirmationSeconds
+                if ($confirmationSeconds -ge 0) {
+                    $recoverySettings.HeartbeatConfirmationSeconds = $confirmationSeconds
+                }
+            }
+            if ($settings.PSObject.Properties.Name -contains 'HealthHeartbeatSeconds') {
+                $heartbeatSeconds = [int]$settings.HealthHeartbeatSeconds
+                if ($heartbeatSeconds -gt 0) {
+                    $recoverySettings.HealthHeartbeatSeconds = $heartbeatSeconds
+                }
             }
         }
     } catch {}
 
+    $recoverySettings.HeartbeatConfirmationSeconds = Get-EffectiveHeartbeatConfirmationSeconds `
+        -ConfiguredSeconds $recoverySettings.HeartbeatConfirmationSeconds `
+        -HeartbeatSeconds $recoverySettings.HealthHeartbeatSeconds `
+        -MarginSeconds 5
     return [pscustomobject]$recoverySettings
 }
 
-function Test-GaugeProcessCommandLine {
+function Get-EffectiveHeartbeatConfirmationSeconds {
+    param(
+        [int]$ConfiguredSeconds = 10,
+        [int]$HeartbeatSeconds = 30,
+        [int]$MarginSeconds = 5
+    )
+
+    $safeConfiguredSeconds = [Math]::Max(0, $ConfiguredSeconds)
+    $safeHeartbeatSeconds = [Math]::Max(1, $HeartbeatSeconds)
+    $safeMarginSeconds = [Math]::Max(0, $MarginSeconds)
+    return [Math]::Max($safeConfiguredSeconds, $safeHeartbeatSeconds + $safeMarginSeconds)
+}
+
+function ConvertFrom-WindowsCommandLine {
     param([string]$CommandLine)
+
+    if ([string]::IsNullOrWhiteSpace($CommandLine)) {
+        return @()
+    }
+
+    if ($null -eq ('AIUsageGauge.CommandLineNative' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace AIUsageGauge
+{
+    public static class CommandLineNative
+    {
+        [DllImport("shell32.dll", SetLastError = true)]
+        public static extern IntPtr CommandLineToArgvW(
+            [MarshalAs(UnmanagedType.LPWStr)] string commandLine,
+            out int argumentCount);
+
+        [DllImport("kernel32.dll")]
+        public static extern IntPtr LocalFree(IntPtr memory);
+    }
+}
+'@
+    }
+
+    $argumentCount = 0
+    $argumentVector = [AIUsageGauge.CommandLineNative]::CommandLineToArgvW(
+        $CommandLine,
+        [ref]$argumentCount
+    )
+    if ($argumentVector -eq [IntPtr]::Zero -or $argumentCount -le 0) {
+        return @()
+    }
+
+    try {
+        $arguments = New-Object string[] $argumentCount
+        for ($index = 0; $index -lt $argumentCount; $index++) {
+            $argumentPointer = [System.Runtime.InteropServices.Marshal]::ReadIntPtr(
+                $argumentVector,
+                $index * [IntPtr]::Size
+            )
+            $arguments[$index] = [System.Runtime.InteropServices.Marshal]::PtrToStringUni($argumentPointer)
+        }
+        return $arguments
+    } finally {
+        [void][AIUsageGauge.CommandLineNative]::LocalFree($argumentVector)
+    }
+}
+
+function Test-GaugeProcessCommandLine {
+    param(
+        [string]$CommandLine,
+        [string]$ExpectedScriptPath = (Join-Path $ScriptDir 'Start-AIUsageGauge.ps1')
+    )
 
     if ([string]::IsNullOrWhiteSpace($CommandLine)) {
         return $false
     }
 
-    $argumentPattern = '(?:"(?:[^"]|"")*"|''(?:[^'']|'''')*''|\S+)'
-    $arguments = @([regex]::Matches($CommandLine, $argumentPattern) | ForEach-Object { $_.Value })
+    try {
+        $arguments = @(ConvertFrom-WindowsCommandLine $CommandLine)
+    } catch {
+        return $false
+    }
     if ($arguments.Count -lt 3) {
         return $false
     }
 
     $executable = $arguments[0]
-    if (($executable.StartsWith('"') -and $executable.EndsWith('"')) -or
-        ($executable.StartsWith("'") -and $executable.EndsWith("'"))) {
-        $executable = $executable.Substring(1, $executable.Length - 2)
-    }
-
     try {
         $executableName = [System.IO.Path]::GetFileName($executable)
+        $canonicalExpectedScriptPath = [System.IO.Path]::GetFullPath($ExpectedScriptPath)
     } catch {
         return $false
     }
@@ -168,78 +245,81 @@ function Test-GaugeProcessCommandLine {
         return $false
     }
 
-    $executionSelectorNames = @(
-        'Command'
-        'CommandWithArgs'
-        'EncodedCommand'
-        'EncodedArguments'
-    )
-    $executionSelectorAliases = @('c', 'cwa', 'e', 'ec', 'enc')
-
-    for ($index = 1; $index -lt $arguments.Count; $index++) {
-        $optionName = $null
-        if ($arguments[$index].StartsWith('/') -and $arguments[$index].Length -gt 1) {
-            $optionName = $arguments[$index].Substring(1)
-        } elseif ($arguments[$index].StartsWith('-')) {
-            $optionName = $arguments[$index].TrimStart('-')
-        }
-        if (-not [string]::IsNullOrWhiteSpace($optionName)) {
-            $nameSeparatorIndex = $optionName.IndexOf(':')
-            if ($nameSeparatorIndex -ge 0) {
-                $optionName = $optionName.Substring(0, $nameSeparatorIndex)
-            }
-
-            $isExecutionSelector = $optionName -iin $executionSelectorAliases
-            if (-not $isExecutionSelector) {
-                foreach ($selectorName in $executionSelectorNames) {
-                    if ($selectorName.StartsWith($optionName, [StringComparison]::OrdinalIgnoreCase)) {
-                        $isExecutionSelector = $true
-                        break
-                    }
-                }
-            }
-            if ($isExecutionSelector) {
+    for ($index = 1; $index -lt $arguments.Count;) {
+        $argument = $arguments[$index]
+        if ($argument -ieq '-File') {
+            if ($index + 1 -ge $arguments.Count) {
                 return $false
-            }
-
-            $isFileSelector = 'File'.StartsWith($optionName, [StringComparison]::OrdinalIgnoreCase)
-            if ($isFileSelector -and $arguments[$index] -ine '-File') {
-                return $false
-            }
-        }
-        if ($arguments[$index] -ine '-File') {
-            $positionalArgument = $arguments[$index]
-            if (($positionalArgument.StartsWith('"') -and $positionalArgument.EndsWith('"')) -or
-                ($positionalArgument.StartsWith("'") -and $positionalArgument.EndsWith("'"))) {
-                $positionalArgument = $positionalArgument.Substring(1, $positionalArgument.Length - 2)
             }
             try {
-                if ([System.IO.Path]::GetExtension($positionalArgument) -ieq '.ps1') {
-                    return $false
-                }
+                $canonicalScriptTarget = [System.IO.Path]::GetFullPath($arguments[$index + 1])
             } catch {
                 return $false
             }
+            return $canonicalScriptTarget.Equals(
+                $canonicalExpectedScriptPath,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        }
+
+        if ($argument -iin @('-NoLogo', '-NoProfile', '-STA', '-NonInteractive')) {
+            $index++
             continue
         }
-        if ($index + 1 -ge $arguments.Count) {
-            return $false
+        if ($argument -ieq '-ExecutionPolicy') {
+            if ($index + 1 -ge $arguments.Count -or $arguments[$index + 1] -ine 'Bypass') {
+                return $false
+            }
+            $index += 2
+            continue
         }
-
-        $scriptTarget = $arguments[$index + 1]
-        if (($scriptTarget.StartsWith('"') -and $scriptTarget.EndsWith('"')) -or
-            ($scriptTarget.StartsWith("'") -and $scriptTarget.EndsWith("'"))) {
-            $scriptTarget = $scriptTarget.Substring(1, $scriptTarget.Length - 2)
+        if ($argument -ieq '-WindowStyle') {
+            if ($index + 1 -ge $arguments.Count -or $arguments[$index + 1] -ine 'Hidden') {
+                return $false
+            }
+            $index += 2
+            continue
         }
-
-        try {
-            return [System.IO.Path]::GetFileName($scriptTarget) -ieq 'Start-AIUsageGauge.ps1'
-        } catch {
-            return $false
-        }
+        return $false
     }
 
     return $false
+}
+
+function ConvertTo-ProcessStartUtcTicks {
+    param($Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    try {
+        if ($Value -is [DateTimeOffset]) {
+            return ([DateTimeOffset]$Value).UtcDateTime.Ticks
+        }
+        if ($Value -is [DateTime]) {
+            return ([DateTimeOffset]::new([DateTime]$Value)).UtcDateTime.Ticks
+        }
+
+        $text = [string]$Value
+        $parsed = [DateTimeOffset]::MinValue
+        if ([DateTimeOffset]::TryParseExact(
+            $text,
+            'o',
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::RoundtripKind,
+            [ref]$parsed
+        )) {
+            return $parsed.UtcDateTime.Ticks
+        }
+
+        if ($text -match '^\d{14}\.\d{6}[+-]\d{3}$') {
+            $dmtfDate = [System.Management.ManagementDateTimeConverter]::ToDateTime($text)
+            return ([DateTimeOffset]::new($dmtfDate)).UtcDateTime.Ticks
+        }
+    } catch {}
+
+    return $null
 }
 
 function Get-GaugeHeartbeatStatus {
@@ -274,25 +354,37 @@ function Get-GaugeHeartbeatStatus {
         return 'pid_mismatch'
     }
 
-    $created = [DateTimeOffset]::MinValue
-    if (-not [DateTimeOffset]::TryParse([string]$Process.CreationDate, [ref]$created)) {
+    $processStartUtcTicks = ConvertTo-ProcessStartUtcTicks $Process.CreationDate
+    if ($null -eq $processStartUtcTicks) {
         return 'malformed'
     }
 
-    $healthStartedAt = [DateTimeOffset]::MinValue
-    if (-not [DateTimeOffset]::TryParse([string]$HealthState.processStartedAt, [ref]$healthStartedAt)) {
+    $healthStartUtcTicks = ConvertTo-ProcessStartUtcTicks $HealthState.processStartedAt
+    if ($null -eq $healthStartUtcTicks) {
         return 'malformed'
     }
-    if ([Math]::Abs(($created - $healthStartedAt).TotalSeconds) -gt 2) {
+    $healthBindingDifference = [TimeSpan]::FromTicks([Math]::Abs(
+        [long]($processStartUtcTicks - $healthStartUtcTicks)
+    ))
+    if (($healthBindingDifference.TotalSeconds) -gt 2) {
         return 'pid_mismatch'
     }
 
+    $created = [DateTimeOffset]::new([DateTime]::new(
+        $processStartUtcTicks,
+        [DateTimeKind]::Utc
+    ))
     if (($Now - $created).TotalMinutes -lt $StartupGraceMinutes) {
         return 'startup_grace'
     }
 
     $heartbeat = [DateTimeOffset]::MinValue
-    if (-not [DateTimeOffset]::TryParse([string]$HealthState.uiHeartbeatAt, [ref]$heartbeat)) {
+    if (-not [DateTimeOffset]::TryParse(
+        [string]$HealthState.uiHeartbeatAt,
+        [System.Globalization.CultureInfo]::InvariantCulture,
+        [System.Globalization.DateTimeStyles]::RoundtripKind,
+        [ref]$heartbeat
+    )) {
         return 'malformed'
     }
     if (($Now - $heartbeat).TotalMinutes -gt $StaleMinutes) {
@@ -319,7 +411,11 @@ function Read-GaugeHealthState {
 function Get-GaugeProcesses {
     @(
         Get-CimInstance Win32_Process -Filter "Name='pwsh.exe' OR Name='powershell.exe'" -ErrorAction SilentlyContinue |
-            Where-Object { Test-GaugeProcessCommandLine ([string]$_.CommandLine) }
+            Where-Object {
+                Test-GaugeProcessCommandLine `
+                    -CommandLine ([string]$_.CommandLine) `
+                    -ExpectedScriptPath $GaugeScriptPath
+            }
     )
 }
 
@@ -349,7 +445,8 @@ function Start-GaugeHidden {
 function Stop-VerifiedGaugeProcess {
     param(
         [int]$ProcessId,
-        [DateTimeOffset]$ExpectedProcessStartedAt
+        [long]$ExpectedProcessStartUtcTicks,
+        [string]$ExpectedScriptPath = $GaugeScriptPath
     )
 
     if ($ProcessId -le 0) {
@@ -367,13 +464,16 @@ function Stop-VerifiedGaugeProcess {
         return 'rejected'
     }
 
-    $verifiedStartedAt = [DateTimeOffset]::MinValue
-    if (-not [DateTimeOffset]::TryParse([string]$verifiedProcess.CreationDate, [ref]$verifiedStartedAt) -or
-        [Math]::Abs(($verifiedStartedAt - $ExpectedProcessStartedAt).TotalSeconds) -gt 2) {
+    $verifiedCreationDate = $verifiedProcess.CreationDate
+    $verifiedProcessStartUtcTicks = ConvertTo-ProcessStartUtcTicks $verifiedCreationDate
+    if ($null -eq $verifiedProcessStartUtcTicks -or
+        $verifiedProcessStartUtcTicks -ne $ExpectedProcessStartUtcTicks) {
         Write-WatchdogEvent 'watchdog_stale_revalidation_failed' @{ processId = $ProcessId; reason = 'stop_revalidation_start' }
         return 'rejected'
     }
-    if (-not (Test-GaugeProcessCommandLine ([string]$verifiedProcess.CommandLine))) {
+    if (-not (Test-GaugeProcessCommandLine `
+        -CommandLine ([string]$verifiedProcess.CommandLine) `
+        -ExpectedScriptPath $ExpectedScriptPath)) {
         Write-WatchdogEvent 'watchdog_stale_revalidation_failed' @{ processId = $ProcessId; reason = 'stop_revalidation_command' }
         return 'rejected'
     }
@@ -387,85 +487,128 @@ function Stop-VerifiedGaugeProcess {
 function Invoke-ConfirmedGaugeRecovery {
     param(
         [int]$ProcessId,
-        [DateTimeOffset]$ExpectedProcessStartedAt,
+        [long]$ExpectedProcessStartUtcTicks,
+        [string]$ExpectedScriptPath = $GaugeScriptPath,
         [int]$StaleMinutes,
         [int]$StartupGraceMinutes = 2,
-        [int]$ConfirmationSeconds = 10
+        [int]$ConfirmationSeconds = 35,
+        [scriptblock]$QueryProcess = {
+            param([int]$ProcessId)
+            Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $ProcessId) -ErrorAction SilentlyContinue
+        },
+        [scriptblock]$Sleep = {
+            param([int]$Seconds)
+            Start-Sleep -Seconds $Seconds
+        },
+        [scriptblock]$ReadHealth = { Read-GaugeHealthState },
+        [scriptblock]$StopVerified = {
+            param(
+                [int]$RequestedProcessId,
+                [long]$ExpectedStartUtcTicks,
+                [string]$CanonicalScriptPath
+            )
+            Stop-VerifiedGaugeProcess `
+                -ProcessId $RequestedProcessId `
+                -ExpectedProcessStartUtcTicks $ExpectedStartUtcTicks `
+                -ExpectedScriptPath $CanonicalScriptPath
+        },
+        [scriptblock]$StartHidden = { Start-GaugeHidden | Out-Null },
+        [scriptblock]$GetNow = { [DateTimeOffset]::UtcNow },
+        [scriptblock]$WriteEvent = {
+            param([string]$Event, [hashtable]$Data)
+            Write-WatchdogEvent -Event $Event -Data $Data
+        },
+        [scriptblock]$WriteStatus = {
+            param([string]$Message)
+            Write-Status -Message $Message
+        }
     )
 
     if ($ProcessId -le 0) {
-        Write-WatchdogEvent 'watchdog_stale_revalidation_failed' @{ reason = 'invalid_pid' }
+        & $WriteEvent 'watchdog_stale_revalidation_failed' @{ reason = 'invalid_pid' }
         return
     }
 
-    Start-Sleep -Seconds ([Math]::Max(0, $ConfirmationSeconds))
-    $confirmationProcess = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $ProcessId) -ErrorAction SilentlyContinue
+    & $Sleep ([Math]::Max(0, $ConfirmationSeconds))
+    $confirmationProcess = & $QueryProcess $ProcessId
     if ($null -eq $confirmationProcess) {
-        Write-WatchdogEvent 'watchdog_stale_process_exited' @{ processId = $ProcessId; reason = 'confirmation_exit' }
-        Start-GaugeHidden | Out-Null
+        & $WriteEvent 'watchdog_stale_process_exited' @{ processId = $ProcessId; reason = 'confirmation_exit' }
+        & $StartHidden
         return
     }
-    if ([int]$confirmationProcess.ProcessId -ne $ProcessId -or
-        -not (Test-GaugeProcessCommandLine ([string]$confirmationProcess.CommandLine))) {
-        Write-WatchdogEvent 'watchdog_stale_revalidation_failed' @{ processId = $ProcessId; reason = 'confirmation_command' }
-        return
-    }
-
-    $confirmationStartedAt = [DateTimeOffset]::MinValue
-    if (-not [DateTimeOffset]::TryParse([string]$confirmationProcess.CreationDate, [ref]$confirmationStartedAt) -or
-        [Math]::Abs(($confirmationStartedAt - $ExpectedProcessStartedAt).TotalSeconds) -gt 2) {
-        Write-WatchdogEvent 'watchdog_stale_revalidation_failed' @{ processId = $ProcessId; reason = 'confirmation_start' }
+    if ([int]$confirmationProcess.ProcessId -ne $ProcessId) {
+        & $WriteEvent 'watchdog_stale_revalidation_failed' @{ processId = $ProcessId; reason = 'confirmation_pid' }
         return
     }
 
-    $confirmationHealth = Read-GaugeHealthState
+    $confirmationStartUtcTicks = ConvertTo-ProcessStartUtcTicks $confirmationProcess.CreationDate
+    if ($null -eq $confirmationStartUtcTicks -or
+        $confirmationStartUtcTicks -ne $ExpectedProcessStartUtcTicks) {
+        & $WriteEvent 'watchdog_stale_revalidation_failed' @{ processId = $ProcessId; reason = 'confirmation_start' }
+        return
+    }
+    if (-not (Test-GaugeProcessCommandLine `
+        -CommandLine ([string]$confirmationProcess.CommandLine) `
+        -ExpectedScriptPath $ExpectedScriptPath)) {
+        & $WriteEvent 'watchdog_stale_revalidation_failed' @{ processId = $ProcessId; reason = 'confirmation_command' }
+        return
+    }
+
+    $confirmationHealth = & $ReadHealth
     $confirmedStatus = Get-GaugeHeartbeatStatus `
         -Process $confirmationProcess `
         -HealthState $confirmationHealth `
-        -Now ([DateTimeOffset]::UtcNow) `
+        -Now (& $GetNow) `
         -StaleMinutes $StaleMinutes `
         -StartupGraceMinutes $StartupGraceMinutes
     if ($confirmedStatus -ne 'stale') {
-        Write-WatchdogEvent 'watchdog_stale_recovered' @{ processId = $ProcessId; reason = $confirmedStatus }
-        Write-Status ('gauge_recovered:{0}:{1}' -f $ProcessId, $confirmedStatus)
+        & $WriteEvent 'watchdog_stale_recovered' @{ processId = $ProcessId; reason = $confirmedStatus }
+        & $WriteStatus ('gauge_recovered:{0}:{1}' -f $ProcessId, $confirmedStatus)
         return
     }
 
-    $verifiedProcess = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $ProcessId) -ErrorAction SilentlyContinue
+    $verifiedProcess = & $QueryProcess $ProcessId
     if ($null -eq $verifiedProcess) {
-        Write-WatchdogEvent 'watchdog_stale_process_exited' @{ processId = $ProcessId; reason = 'final_exit' }
-        Start-GaugeHidden | Out-Null
+        & $WriteEvent 'watchdog_stale_process_exited' @{ processId = $ProcessId; reason = 'final_exit' }
+        & $StartHidden
         return
     }
     if ([int]$verifiedProcess.ProcessId -ne $ProcessId) {
-        Write-WatchdogEvent 'watchdog_stale_revalidation_failed' @{ processId = $ProcessId; reason = 'final_pid' }
+        & $WriteEvent 'watchdog_stale_revalidation_failed' @{ processId = $ProcessId; reason = 'final_pid' }
         return
     }
 
-    $finalStartedAt = [DateTimeOffset]::MinValue
-    if (-not [DateTimeOffset]::TryParse([string]$verifiedProcess.CreationDate, [ref]$finalStartedAt) -or
-        [Math]::Abs(($finalStartedAt - $ExpectedProcessStartedAt).TotalSeconds) -gt 2) {
-        Write-WatchdogEvent 'watchdog_stale_revalidation_failed' @{ processId = $ProcessId; reason = 'final_start' }
+    $finalStartUtcTicks = ConvertTo-ProcessStartUtcTicks $verifiedProcess.CreationDate
+    if ($null -eq $finalStartUtcTicks -or
+        $finalStartUtcTicks -ne $ExpectedProcessStartUtcTicks) {
+        & $WriteEvent 'watchdog_stale_revalidation_failed' @{ processId = $ProcessId; reason = 'final_start' }
+        return
+    }
+    if (-not (Test-GaugeProcessCommandLine `
+        -CommandLine ([string]$verifiedProcess.CommandLine) `
+        -ExpectedScriptPath $ExpectedScriptPath)) {
+        & $WriteEvent 'watchdog_stale_revalidation_failed' @{ processId = $ProcessId; reason = 'final_command' }
         return
     }
 
-    $finalHealth = Read-GaugeHealthState
+    $finalHealth = & $ReadHealth
     $finalStatus = Get-GaugeHeartbeatStatus `
         -Process $verifiedProcess `
         -HealthState $finalHealth `
-        -Now ([DateTimeOffset]::UtcNow) `
+        -Now (& $GetNow) `
         -StaleMinutes $StaleMinutes `
         -StartupGraceMinutes $StartupGraceMinutes
     if ($finalStatus -ne 'stale') {
-        Write-WatchdogEvent 'watchdog_stale_recovered' @{ processId = $ProcessId; reason = $finalStatus }
-        Write-Status ('gauge_recovered:{0}:{1}' -f $ProcessId, $finalStatus)
+        & $WriteEvent 'watchdog_stale_recovered' @{ processId = $ProcessId; reason = $finalStatus }
+        & $WriteStatus ('gauge_recovered:{0}:{1}' -f $ProcessId, $finalStatus)
         return
     }
-    $stopResult = Stop-VerifiedGaugeProcess `
-        -ProcessId $ProcessId `
-        -ExpectedProcessStartedAt $ExpectedProcessStartedAt
+    $stopResult = & $StopVerified `
+        $ProcessId `
+        $ExpectedProcessStartUtcTicks `
+        $ExpectedScriptPath
     if ($stopResult -in @('stopped', 'exited')) {
-        Start-GaugeHidden | Out-Null
+        & $StartHidden
     }
 }
 
@@ -485,22 +628,25 @@ function Ensure-GaugeRunning {
             -Now ([DateTimeOffset]::UtcNow) `
             -StaleMinutes $recoverySettings.HealthStaleMinutes `
             -StartupGraceMinutes 2
-        Write-WatchdogEvent 'watchdog_heartbeat_status' @{ processId = [int]$process.ProcessId; reason = $status }
+        if ($status -ne 'fresh') {
+            Write-WatchdogEvent 'watchdog_heartbeat_status' @{ processId = [int]$process.ProcessId; reason = $status }
+        }
         Write-Status ('gauge_heartbeat:{0}:{1}' -f $process.ProcessId, $status)
 
         if ($status -ne 'stale') {
             continue
         }
 
-        $expectedProcessStartedAt = [DateTimeOffset]::MinValue
-        if (-not [DateTimeOffset]::TryParse([string]$process.CreationDate, [ref]$expectedProcessStartedAt)) {
+        $expectedProcessStartUtcTicks = ConvertTo-ProcessStartUtcTicks $process.CreationDate
+        if ($null -eq $expectedProcessStartUtcTicks) {
             Write-WatchdogEvent 'watchdog_heartbeat_status' @{ processId = [int]$process.ProcessId; reason = 'malformed' }
             continue
         }
 
         Invoke-ConfirmedGaugeRecovery `
             -ProcessId ([int]$process.ProcessId) `
-            -ExpectedProcessStartedAt $expectedProcessStartedAt `
+            -ExpectedProcessStartUtcTicks $expectedProcessStartUtcTicks `
+            -ExpectedScriptPath $GaugeScriptPath `
             -StaleMinutes $recoverySettings.HealthStaleMinutes `
             -StartupGraceMinutes 2 `
             -ConfirmationSeconds $recoverySettings.HeartbeatConfirmationSeconds
@@ -526,7 +672,6 @@ function Test-ClaudeRefreshTaskCurrent {
 
 function Ensure-ClaudeRefreshTask {
     if (Test-ClaudeRefreshTaskCurrent) {
-        Write-WatchdogEvent 'watchdog_refresh_task_current'
         Write-Status 'refresh_task_current'
         return
     }
@@ -552,7 +697,6 @@ try {
     if (-not $SkipClaudeRefreshTaskCheck) {
         Ensure-ClaudeRefreshTask
     } else {
-        Write-WatchdogEvent 'watchdog_refresh_task_check_skipped'
         Write-Status 'refresh_task_check_skipped'
     }
     exit 0

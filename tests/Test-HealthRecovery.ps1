@@ -60,8 +60,13 @@ function Get-WatchdogFunctionAst([string]$FunctionName) {
 }
 
 $requiredFunctionNames = @(
+    'ConvertFrom-WindowsCommandLine'
+    'ConvertTo-ProcessStartUtcTicks'
+    'Get-EffectiveHeartbeatConfirmationSeconds'
+    'Get-WatchdogRecoverySettings'
     'Test-GaugeProcessCommandLine'
     'Get-GaugeHeartbeatStatus'
+    'Invoke-ConfirmedGaugeRecovery'
 )
 $requiredFunctions = @{}
 $missingFunctions = @(
@@ -83,12 +88,13 @@ foreach ($functionName in $requiredFunctionNames) {
     Invoke-Expression $requiredFunctions[$functionName].Extent.Text
 }
 
+$ScriptDir = 'C:\app'
+$canonicalGaugePath = 'C:\app\Start-AIUsageGauge.ps1'
 $matchingCommandLines = @(
     'pwsh.exe -File "C:\app\Start-AIUsageGauge.ps1"',
     'powershell -NoProfile -File C:\app\Start-AIUsageGauge.ps1 -Placement right',
     'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -NonInteractive -File C:\app\Start-AIUsageGauge.ps1',
-    '"C:\Program Files\PowerShell\7\pwsh.exe" -NoLogo -File ''C:\app dir\Start-AIUsageGauge.ps1'' -RefreshSeconds 30',
-    'PWSH -File Start-AIUsageGauge.ps1',
+    '"C:\Program Files\PowerShell\7\pwsh.exe" -NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File "C:\app\Start-AIUsageGauge.ps1" -RefreshSeconds 30',
     'pwsh.exe -File C:\app\Start-AIUsageGauge.ps1 -e script-value -en script-value -enco script-value -CommandWithArgs script-value -cwa script-value -EncodedArguments script-value /c script-value /EncodedCommand script-value --Command script-value --File C:\other.ps1 C:\other.ps1 /File C:\other.ps1 -f C:\other.ps1'
 )
 foreach ($commandLine in $matchingCommandLines) {
@@ -118,6 +124,11 @@ $nonMatchingCommandLines = @(
     'powershell.exe -File C:\app\Start-AIUsageGauge.ps1x',
     'pwsh.exe -File C:\app\another.ps1 Start-AIUsageGauge.ps1',
     'pwsh.exe -File C:\app\another.ps1 -Target C:\app\Start-AIUsageGauge.ps1',
+    'pwsh.exe -File C:\other\Start-AIUsageGauge.ps1',
+    'pwsh.exe -File Start-AIUsageGauge.ps1',
+    'pwsh.exe -File ''C:\app\Start-AIUsageGauge.ps1''',
+    'pwsh.exe -File ''C:\app dir\Start-AIUsageGauge.ps1''',
+    'pwsh.exe -NoProfile -UnknownMode value -File C:\app\Start-AIUsageGauge.ps1',
     'cmd.exe /c pwsh.exe -File C:\app\Start-AIUsageGauge.ps1',
     'pwsh.exe Start-AIUsageGauge.ps1'
 )
@@ -165,7 +176,55 @@ foreach ($filePrefixLength in 1..'File'.Length) {
 Assert-False (Test-GaugeProcessCommandLine $null) 'A null command line must not match'
 Assert-False (Test-GaugeProcessCommandLine '   ') 'A blank command line must not match'
 
+$singleQuotedArgv = @(ConvertFrom-WindowsCommandLine 'pwsh.exe -File ''C:\app dir\Start-AIUsageGauge.ps1''')
+Assert-Equal 4 $singleQuotedArgv.Count 'Raw Windows command lines must not treat single quotes as grouping characters'
+Assert-Equal "'C:\app" $singleQuotedArgv[2] 'The first raw single-quoted path fragment must retain its quote character'
+
+Assert-Equal 35 (Get-EffectiveHeartbeatConfirmationSeconds 10 30 5) 'Confirmation must outlast the default heartbeat plus margin'
+Assert-Equal 60 (Get-EffectiveHeartbeatConfirmationSeconds 60 30 5) 'A larger configured confirmation must remain usable'
+Assert-Equal 50 (Get-EffectiveHeartbeatConfirmationSeconds 10 45 5) 'A configured heartbeat must raise the effective confirmation'
+
+$missingSettingsPath = Join-Path ([System.IO.Path]::GetTempPath()) ('ai-usage-gauge-missing-{0}.json' -f [guid]::NewGuid())
+$SettingsPath = $missingSettingsPath
+$defaultRecoverySettings = Get-WatchdogRecoverySettings
+Assert-Equal 30 $defaultRecoverySettings.HealthHeartbeatSeconds 'Missing settings must retain the default heartbeat'
+Assert-Equal 35 $defaultRecoverySettings.HeartbeatConfirmationSeconds 'Missing settings must still apply the resume-safe confirmation minimum'
+
+$temporarySettingsPath = Join-Path ([System.IO.Path]::GetTempPath()) ('ai-usage-gauge-settings-{0}.json' -f [guid]::NewGuid())
+try {
+    '{"HealthHeartbeatSeconds":45,"HeartbeatConfirmationSeconds":60}' |
+        Set-Content -LiteralPath $temporarySettingsPath -Encoding UTF8
+    $SettingsPath = $temporarySettingsPath
+    $configuredRecoverySettings = Get-WatchdogRecoverySettings
+    Assert-Equal 45 $configuredRecoverySettings.HealthHeartbeatSeconds 'Configured heartbeat settings must remain usable'
+    Assert-Equal 60 $configuredRecoverySettings.HeartbeatConfirmationSeconds 'A configured confirmation above the minimum must remain usable'
+
+    '{"HealthHeartbeatSeconds":45,"HeartbeatConfirmationSeconds":10}' |
+        Set-Content -LiteralPath $temporarySettingsPath -Encoding UTF8
+    $clampedRecoverySettings = Get-WatchdogRecoverySettings
+    Assert-Equal 50 $clampedRecoverySettings.HeartbeatConfirmationSeconds 'Configured confirmation below heartbeat plus margin must be raised'
+} finally {
+    Remove-Item -LiteralPath $temporarySettingsPath -Force -ErrorAction SilentlyContinue
+    $SettingsPath = Join-Path $ScriptDir 'settings.json'
+}
+
 $now = [DateTimeOffset]::Parse('2026-07-29T04:00:00Z')
+$exactProcessStart = [DateTimeOffset]::ParseExact(
+    '2026-07-29T03:00:00.1234567+00:00',
+    'o',
+    [System.Globalization.CultureInfo]::InvariantCulture
+)
+$expectedProcessStartTicks = $exactProcessStart.UtcDateTime.Ticks
+Assert-Equal $expectedProcessStartTicks (ConvertTo-ProcessStartUtcTicks $exactProcessStart) 'DateTimeOffset process starts must preserve exact UTC ticks'
+Assert-Equal $expectedProcessStartTicks (ConvertTo-ProcessStartUtcTicks $exactProcessStart.UtcDateTime) 'DateTime process starts must preserve exact UTC ticks'
+$previousCulture = [System.Globalization.CultureInfo]::CurrentCulture
+try {
+    [System.Globalization.CultureInfo]::CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo('fr-FR')
+    Assert-Equal $expectedProcessStartTicks (ConvertTo-ProcessStartUtcTicks $exactProcessStart.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)) 'String process starts must parse independently of current culture'
+} finally {
+    [System.Globalization.CultureInfo]::CurrentCulture = $previousCulture
+}
+
 $oldProcess = [pscustomobject]@{
     ProcessId = 42
     CreationDate = $now.AddHours(-1)
@@ -270,6 +329,131 @@ Assert-Equal 'fresh' (Get-GaugeHeartbeatStatus $oldProcess ([pscustomobject]@{
     uiHeartbeatAt = $now.AddMinutes(5).ToString('o')
 }) $now 10 2) 'A future heartbeat must not be stale'
 
+$validGaugeCommandLine = 'pwsh.exe -NoProfile -STA -ExecutionPolicy Bypass -File "C:\app\Start-AIUsageGauge.ps1" -Placement right'
+function New-TestGaugeProcess {
+    param(
+        [DateTimeOffset]$StartedAt = $exactProcessStart,
+        [string]$CommandLine = $validGaugeCommandLine
+    )
+
+    [pscustomobject]@{
+        ProcessId = 42
+        CreationDate = $StartedAt
+        CommandLine = $CommandLine
+    }
+}
+
+function New-TestHealthState {
+    param(
+        [DateTimeOffset]$HeartbeatAt,
+        [DateTimeOffset]$StartedAt = $exactProcessStart
+    )
+
+    [pscustomobject]@{
+        schemaVersion = 1
+        pid = 42
+        processStartedAt = $StartedAt.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+        uiHeartbeatAt = $HeartbeatAt.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+    }
+}
+
+function Invoke-TestRecoveryScenario {
+    param(
+        [object[]]$ProcessResults,
+        [object[]]$HealthResults,
+        [string]$StopResult = 'stopped'
+    )
+
+    $scenario = [pscustomobject]@{
+        ProcessIndex = 0
+        HealthIndex = 0
+        SleepCount = 0
+        SleptSeconds = 0
+        StopCount = 0
+        RestartCount = 0
+    }
+    $queryProcess = {
+        param([int]$ProcessId)
+        if ($scenario.ProcessIndex -ge $ProcessResults.Count) { return $null }
+        $result = $ProcessResults[$scenario.ProcessIndex]
+        $scenario.ProcessIndex++
+        return $result
+    }.GetNewClosure()
+    $readHealth = {
+        if ($scenario.HealthIndex -ge $HealthResults.Count) { return [pscustomobject]@{} }
+        $result = $HealthResults[$scenario.HealthIndex]
+        $scenario.HealthIndex++
+        return $result
+    }.GetNewClosure()
+    $sleep = {
+        param([int]$Seconds)
+        $scenario.SleepCount++
+        $scenario.SleptSeconds = $Seconds
+    }.GetNewClosure()
+    $stopVerified = {
+        param([int]$ProcessId, [long]$ExpectedStartUtcTicks, [string]$ExpectedScriptPath)
+        $scenario.StopCount++
+        return $StopResult
+    }.GetNewClosure()
+    $startHidden = { $scenario.RestartCount++ }.GetNewClosure()
+
+    Invoke-ConfirmedGaugeRecovery `
+        -ProcessId 42 `
+        -ExpectedProcessStartUtcTicks $expectedProcessStartTicks `
+        -ExpectedScriptPath $canonicalGaugePath `
+        -StaleMinutes 10 `
+        -StartupGraceMinutes 2 `
+        -ConfirmationSeconds 35 `
+        -QueryProcess $queryProcess `
+        -ReadHealth $readHealth `
+        -Sleep $sleep `
+        -StopVerified $stopVerified `
+        -StartHidden $startHidden `
+        -GetNow { $now } `
+        -WriteEvent { param($Event, $Data) } `
+        -WriteStatus { param($Message) }
+
+    return $scenario
+}
+
+$sameProcess = New-TestGaugeProcess
+$recoveredScenario = Invoke-TestRecoveryScenario `
+    -ProcessResults @($sameProcess) `
+    -HealthResults @((New-TestHealthState -HeartbeatAt $now.AddMinutes(-1)))
+Assert-Equal 0 $recoveredScenario.StopCount 'A recovered heartbeat must not stop the gauge'
+Assert-Equal 0 $recoveredScenario.RestartCount 'A recovered heartbeat must not restart the gauge'
+
+$malformedScenario = Invoke-TestRecoveryScenario `
+    -ProcessResults @($sameProcess) `
+    -HealthResults @([pscustomobject]@{})
+Assert-Equal 0 $malformedScenario.StopCount 'Malformed confirmation health must not stop the gauge'
+Assert-Equal 0 $malformedScenario.RestartCount 'Malformed confirmation health must not restart the gauge'
+
+$exitedScenario = Invoke-TestRecoveryScenario -ProcessResults @() -HealthResults @()
+Assert-Equal 0 $exitedScenario.StopCount 'An exited process must not be stopped'
+Assert-Equal 1 $exitedScenario.RestartCount 'An exited process must launch the hidden gauge once'
+
+$reusedScenario = Invoke-TestRecoveryScenario `
+    -ProcessResults @((New-TestGaugeProcess -StartedAt $exactProcessStart.AddTicks(1))) `
+    -HealthResults @()
+Assert-Equal 0 $reusedScenario.StopCount 'A reused PID with a different exact start tick must not be stopped'
+Assert-Equal 0 $reusedScenario.RestartCount 'A reused PID must not trigger a competing restart'
+
+$changedCommandScenario = Invoke-TestRecoveryScenario `
+    -ProcessResults @((New-TestGaugeProcess -CommandLine 'pwsh.exe -File "C:\other\Start-AIUsageGauge.ps1"')) `
+    -HealthResults @()
+Assert-Equal 0 $changedCommandScenario.StopCount 'A changed command line must not be stopped'
+Assert-Equal 0 $changedCommandScenario.RestartCount 'A changed command line must not restart the gauge'
+
+$staleHealth = New-TestHealthState -HeartbeatAt $now.AddMinutes(-11)
+$confirmedStaleScenario = Invoke-TestRecoveryScenario `
+    -ProcessResults @($sameProcess, $sameProcess) `
+    -HealthResults @($staleHealth, $staleHealth)
+Assert-Equal 1 $confirmedStaleScenario.StopCount 'A twice-confirmed stale gauge must authorize exactly one stop'
+Assert-Equal 1 $confirmedStaleScenario.RestartCount 'A stopped stale gauge must launch hidden exactly once'
+Assert-Equal 1 $confirmedStaleScenario.SleepCount 'Recovery must wait exactly once for confirmation'
+Assert-Equal 35 $confirmedStaleScenario.SleptSeconds 'Recovery must use the effective resume-safe confirmation delay'
+
 $getProcessesAst = Get-WatchdogFunctionAst 'Get-GaugeProcesses'
 $ensureRunningAst = Get-WatchdogFunctionAst 'Ensure-GaugeRunning'
 $recoveryAst = Get-WatchdogFunctionAst 'Invoke-ConfirmedGaugeRecovery'
@@ -284,9 +468,13 @@ $ensureRunningText = $ensureRunningAst.Extent.Text
 $recoveryText = $recoveryAst.Extent.Text
 $stopVerifiedText = $stopVerifiedAst.Extent.Text
 $heartbeatStatusText = $requiredFunctions['Get-GaugeHeartbeatStatus'].Extent.Text
+$commandLineText = $requiredFunctions['Test-GaugeProcessCommandLine'].Extent.Text
 
 Assert-True ($getProcessesText -match 'Get-CimInstance\s+Win32_Process') 'Gauge discovery must use Win32_Process CIM data'
 Assert-True ($getProcessesText -match 'Test-GaugeProcessCommandLine') 'Gauge discovery must use strict command-line validation'
+Assert-True ($getProcessesText -match 'GaugeScriptPath') 'Gauge discovery must require the canonical script path'
+Assert-True ($commandLineText -match 'ConvertFrom-WindowsCommandLine') 'Command matching must use Windows argv parsing'
+Assert-True ($commandLineText -match 'GetFullPath') 'Command matching must canonicalize the expected and actual script paths'
 Assert-True ($ensureRunningText -match "(?s)if\s*\(\`$status\s*-ne\s*'stale'\)\s*\{.*?continue.*?\}.*?Invoke-ConfirmedGaugeRecovery") 'Only a stale heartbeat may invoke confirmed recovery'
 Assert-True ($heartbeatStatusText -match 'schemaVersion') 'Heartbeat classification must validate schemaVersion'
 Assert-True ($heartbeatStatusText -match 'processStartedAt') 'Heartbeat classification must validate the health process start time'
@@ -326,20 +514,21 @@ $confirmationHealthIndex = $recoveryText.IndexOf('Read-GaugeHealthState', $sleep
 Assert-True ($sleepIndex -ge 0) 'Stale recovery must wait for confirmation'
 Assert-True ($confirmationHealthIndex -gt $sleepIndex) 'Stale recovery must reread health after the confirmation wait'
 Assert-True ($recoveryText -match 'Get-CimInstance\s+Win32_Process\s+-Filter\s+\("ProcessId=\{0\}"\s+-f\s+\$ProcessId\)') 'Recovery CIM queries must use the exact integer ProcessId filter'
-Assert-True ($recoveryText -match '(?s)\$null\s*-eq\s*\$confirmationProcess.*?Start-GaugeHidden.*?return') 'A process that exits during confirmation must be restarted without stopping'
+Assert-True ($recoveryText -match '(?s)\$null\s*-eq\s*\$confirmationProcess.*?&\s*\$StartHidden.*?return') 'A process that exits during confirmation must be restarted through the injected hidden launcher without stopping'
 Assert-True ($recoveryText -match '(?s)\$confirmedStatus\s*-ne\s*''stale''.*?return') 'A heartbeat that recovers during confirmation must not be stopped'
-Assert-True ($recoveryText -match '\[DateTimeOffset\]\$ExpectedProcessStartedAt') 'Confirmed recovery must accept the original process start time'
-Assert-True ($recoveryText -match '(?s)Stop-VerifiedGaugeProcess.*?-ExpectedProcessStartedAt\s+\$ExpectedProcessStartedAt') 'Confirmed recovery must pass the original process start time to final stop verification'
-Assert-True ($ensureRunningText -match '(?s)\$expectedProcessStartedAt.*?\$process\.CreationDate.*?Invoke-ConfirmedGaugeRecovery.*?-ExpectedProcessStartedAt\s+\$expectedProcessStartedAt') 'Gauge monitoring must preserve the original CIM creation time through confirmation'
+Assert-True ($recoveryText -match '\[long\]\$ExpectedProcessStartUtcTicks') 'Confirmed recovery must accept exact original process start ticks'
+Assert-True ($recoveryText -match '(?s)Stop-Verified.*?ExpectedProcessStartUtcTicks') 'Confirmed recovery must pass exact process start ticks to final stop verification'
+Assert-True ($ensureRunningText -match '(?s)ConvertTo-ProcessStartUtcTicks.*?\$process\.CreationDate.*?Invoke-ConfirmedGaugeRecovery.*?-ExpectedProcessStartUtcTicks') 'Gauge monitoring must preserve exact initial CIM start ticks through confirmation'
 
-Assert-True ($stopVerifiedText -match '\[DateTimeOffset\]\$ExpectedProcessStartedAt') 'Final stop verification must require the expected process start time'
+Assert-True ($stopVerifiedText -match '\[long\]\$ExpectedProcessStartUtcTicks') 'Final stop verification must require exact expected process start ticks'
 $verifiedCimIndex = $stopVerifiedText.IndexOf('Get-CimInstance Win32_Process')
 $verifiedCreationIndex = $stopVerifiedText.IndexOf('$verifiedProcess.CreationDate')
-$verifiedToleranceIndex = $stopVerifiedText.IndexOf('TotalSeconds')
+$verifiedTicksIndex = $stopVerifiedText.IndexOf('ConvertTo-ProcessStartUtcTicks')
+$verifiedExactMatchIndex = $stopVerifiedText.IndexOf('-ne $ExpectedProcessStartUtcTicks')
 $verifiedCommandIndex = $stopVerifiedText.IndexOf('Test-GaugeProcessCommandLine')
 $verifiedStopIndex = $stopVerifiedText.IndexOf('Stop-Process')
 Assert-True ($verifiedCimIndex -ge 0 -and $verifiedCreationIndex -gt $verifiedCimIndex) 'Final stop verification must read creation time from a fresh exact-PID CIM result'
-Assert-True ($verifiedToleranceIndex -gt $verifiedCreationIndex -and $verifiedToleranceIndex -lt $verifiedStopIndex) 'Final stop verification must compare process start time before stopping'
+Assert-True ($verifiedTicksIndex -gt $verifiedCreationIndex -and $verifiedExactMatchIndex -gt $verifiedTicksIndex -and $verifiedExactMatchIndex -lt $verifiedStopIndex) 'Final stop verification must compare exact UTC process start ticks before stopping'
 Assert-True ($verifiedCommandIndex -gt $verifiedCimIndex -and $verifiedCommandIndex -lt $verifiedStopIndex) 'Final stop verification must revalidate the command line before stopping'
 
 Write-Host 'Health recovery tests passed'

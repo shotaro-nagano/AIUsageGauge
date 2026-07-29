@@ -90,6 +90,18 @@ $writeHealthAst = $startAst.Find({
 }, $true)
 Assert-True ($null -ne $writeHealthAst) 'Write-GaugeHealthState function is missing'
 $writeHealthText = $writeHealthAst.Extent.Text
+$updateHeartbeatAst = $startAst.Find({
+    param($ast)
+    $ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $ast.Name -eq 'Update-GaugeHeartbeat'
+}, $true)
+Assert-True ($null -ne $updateHeartbeatAst) 'Update-GaugeHeartbeat function is missing'
+$removeOrphanHealthTempsAst = $startAst.Find({
+    param($ast)
+    $ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $ast.Name -eq 'Remove-OrphanedGaugeHealthTempFiles'
+}, $true)
+Assert-True ($null -ne $removeOrphanHealthTempsAst) 'Orphan health temp cleanup function is missing'
 $healthStateAssignment = $startAst.Find({
     param($ast)
     $ast -is [System.Management.Automation.Language.AssignmentStatementAst] -and
@@ -117,7 +129,7 @@ Assert-True ($healthStateKeys.Count -eq $expectedHealthStateKeys.Count) 'Gauge h
 foreach ($healthStateKey in $expectedHealthStateKeys) {
     Assert-True ($healthStateKeys -contains $healthStateKey) "Gauge health state is missing $healthStateKey"
 }
-Assert-True ($healthStateInitializationText -match 'processStartedAt\s*=\s*\(\[DateTimeOffset\]::new\(\$currentGaugeProcess\.StartTime\)\)\.ToUniversalTime\(\)') 'Gauge health processStartedAt must use the actual current process StartTime in UTC'
+Assert-True ($healthStateInitializationText -match 'processStartedAt\s*=\s*\(\[DateTimeOffset\]::new\(\$currentGaugeProcess\.StartTime\)\)\.ToUniversalTime\(\)\.ToString\(\s*[''"]o[''"]\s*,\s*\[System\.Globalization\.CultureInfo\]::InvariantCulture\s*\)') 'Gauge health processStartedAt must preserve actual process StartTime as culture-invariant UTC round-trip text'
 
 $watchdogTokens = $null
 $watchdogParseErrors = $null
@@ -132,6 +144,11 @@ $getGaugeProcessesAst = $watchdogAst.Find({
     $ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
         $ast.Name -eq 'Get-GaugeProcesses'
 }, $true)
+$ensureGaugeRunningAst = $watchdogAst.Find({
+    param($ast)
+    $ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $ast.Name -eq 'Ensure-GaugeRunning'
+}, $true)
 $confirmedRecoveryAst = $watchdogAst.Find({
     param($ast)
     $ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -143,9 +160,11 @@ $stopVerifiedAst = $watchdogAst.Find({
         $ast.Name -eq 'Stop-VerifiedGaugeProcess'
 }, $true)
 Assert-True ($null -ne $getGaugeProcessesAst) 'Get-GaugeProcesses function is missing'
+Assert-True ($null -ne $ensureGaugeRunningAst) 'Ensure-GaugeRunning function is missing'
 Assert-True ($null -ne $confirmedRecoveryAst) 'Invoke-ConfirmedGaugeRecovery function is missing'
 Assert-True ($null -ne $stopVerifiedAst) 'Stop-VerifiedGaugeProcess function is missing'
 $getGaugeProcessesText = $getGaugeProcessesAst.Extent.Text
+$ensureGaugeRunningText = $ensureGaugeRunningAst.Extent.Text
 $confirmedRecoveryText = $confirmedRecoveryAst.Extent.Text
 $stopVerifiedText = $stopVerifiedAst.Extent.Text
 
@@ -194,9 +213,19 @@ Assert-True ($start -match '\$HealthStatePath\s*=\s*Join-Path\s+\$RefreshStateDi
 Assert-True ($writeHealthText -match '\$tempPath\s*=\s*"\$HealthStatePath\.\$PID\.tmp"') 'Health writes must use a per-PID temporary file'
 Assert-True ($writeHealthText -match '\[System\.IO\.File\]::Move\(\$tempPath,\s*\$HealthStatePath,\s*\$true\)') 'Health writes must atomically replace health.json'
 Assert-True ($writeHealthText -match '(?s)catch\s*\{.*?Remove-Item\s+-LiteralPath\s+\$tempPath.*?TotalMinutes\s*-ge\s*5.*?health_state_write_failed') 'Failed health writes must clean temporary files and rate-limit diagnostics to five minutes'
+Assert-True ($removeOrphanHealthTempsAst.Extent.Text -match 'health\.json\.\*\.tmp') 'Startup cleanup must target only orphan health temp files'
+Assert-True ($start -match '(?s)Remove-OrphanedGaugeHealthTempFiles.*?Write-GaugeHealthState') 'Orphan health temp files must be cleaned before the initial health write'
 Assert-True ($start -match '(?s)\$healthHeartbeatSeconds\s*=\s*30.*?HealthHeartbeatSeconds') 'Gauge heartbeat must default to 30 seconds before Task 5 adds the setting'
-Assert-True ($start -match '(?s)DispatcherTimer.*?uiHeartbeatAt.*?Write-GaugeHealthState') 'A dispatcher timer must persist the UI heartbeat'
+Assert-True ($start -match '(?s)DispatcherTimer.*?Update-GaugeHeartbeat') 'A dispatcher timer must persist the UI heartbeat through the shared heartbeat function'
+Assert-True ($updateHeartbeatAst.Extent.Text -match '(?s)uiHeartbeatAt.*?Write-GaugeHealthState') 'The shared heartbeat function must update and persist uiHeartbeatAt'
+Assert-True ($start -match '(?s)PowerModeChanged.*?PowerModes\]::Resume.*?Dispatcher\.BeginInvoke.*?Update-GaugeHeartbeat') 'Resume must schedule an immediate heartbeat on the UI dispatcher'
+Assert-True ($start -match 'remove_PowerModeChanged') 'Gauge shutdown must unsubscribe the resume heartbeat handler'
 Assert-True ($updateUsageText -match '(?s)lastUpdateAttemptAt.*?Write-GaugeHealthState') 'Every usage update must persist lastUpdateAttemptAt'
+$firstUpdateHealthWriteIndex = $updateUsageText.IndexOf('Write-GaugeHealthState')
+$codexStartingIndex = $updateUsageText.IndexOf('Set-GaugeServiceHealth -Service codex -Status starting')
+$claudeStartingIndex = $updateUsageText.IndexOf('Set-GaugeServiceHealth -Service claude -Status starting')
+Assert-True ($codexStartingIndex -ge 0 -and $codexStartingIndex -lt $firstUpdateHealthWriteIndex) 'An enabled Codex update must publish starting before its API attempt'
+Assert-True ($claudeStartingIndex -ge 0 -and $claudeStartingIndex -lt $firstUpdateHealthWriteIndex) 'An enabled Claude update must publish starting before its API attempt'
 foreach ($healthCategory in @('starting', 'ok', 'off', 'auth', 'rate_limited', 'unavailable')) {
     $healthCategoryPattern = '[''"]{0}[''"]' -f [regex]::Escape($healthCategory)
     Assert-True ($start -match $healthCategoryPattern) "Gauge health must support only the fixed $healthCategory service category"
@@ -273,8 +302,11 @@ Assert-True ($watchdog -match 'Install-ClaudeOAuthRefreshTask\.ps1') 'Watchdog m
 Assert-True ($watchdog -match '\[switch\]\$SkipClaudeRefreshTaskCheck') 'Watchdog must support skipping refresh task checks when called from that task'
 Assert-True ($watchdog -match 'Get-CimInstance\s+Win32_Process') 'Watchdog must inspect running Gauge processes'
 Assert-True ($watchdog -match 'Start-AIUsageGauge\.ps1') 'Watchdog process matching must be scoped to Start-AIUsageGauge.ps1'
+Assert-True ($watchdog -match 'CommandLineToArgvW') 'Watchdog must use Windows command-line parsing semantics'
+Assert-True ($watchdog -match '\$GaugeScriptPath\s*=.*?GetFullPath') 'Watchdog must bind recovery to the canonical Gauge script path'
 Assert-True ($watchdog -match '\$HealthStatePath\s*=\s*Join-Path\s+\$EventLogDir\s+[''"]health\.json[''"]') 'Watchdog health.json must stay under the fixed LocalAppData AIUsageGauge directory'
-Assert-True ($watchdog -match '(?s)HealthStaleMinutes\s*=\s*10.*?HeartbeatConfirmationSeconds\s*=\s*10') 'Watchdog recovery settings must default safely before Task 5 adds keys'
+Assert-True ($watchdog -match '(?s)HealthStaleMinutes\s*=\s*10.*?HealthHeartbeatSeconds\s*=\s*30.*?HeartbeatConfirmationSeconds\s*=\s*10') 'Watchdog recovery settings must default safely before Task 5 adds keys'
+Assert-True ($watchdog -match 'Get-EffectiveHeartbeatConfirmationSeconds') 'Watchdog must enforce confirmation longer than the configured heartbeat'
 Assert-True ($getGaugeProcessesText -match 'Test-GaugeProcessCommandLine') 'Gauge discovery must use strict -File command-line validation'
 $watchdogStopCommands = @($watchdogAst.FindAll({
     param($ast)
@@ -304,12 +336,16 @@ Assert-True ($healthRereadIndex -ge 0 -and $healthRereadIndex -lt $stopInvocatio
 $freshCimIndex = $stopVerifiedText.IndexOf('Get-CimInstance Win32_Process')
 $pidEqualityIndex = $stopVerifiedText.IndexOf('$verifiedProcess.ProcessId')
 $creationDateIndex = $stopVerifiedText.IndexOf('$verifiedProcess.CreationDate')
-$startToleranceIndex = $stopVerifiedText.IndexOf('TotalSeconds')
+$startTicksIndex = $stopVerifiedText.IndexOf('ConvertTo-ProcessStartUtcTicks')
+$exactStartIndex = $stopVerifiedText.IndexOf('-ne $ExpectedProcessStartUtcTicks')
 $commandRevalidationIndex = $stopVerifiedText.IndexOf('Test-GaugeProcessCommandLine')
 $confirmedStopIndex = $stopVerifiedText.IndexOf('Stop-Process')
 Assert-True ($freshCimIndex -ge 0 -and $freshCimIndex -lt $pidEqualityIndex) 'Final recovery must freshly query Win32_Process by exact PID'
-Assert-True ($pidEqualityIndex -lt $creationDateIndex -and $creationDateIndex -lt $startToleranceIndex -and $startToleranceIndex -lt $confirmedStopIndex) 'Final recovery must verify the expected process start time before stopping'
+Assert-True ($pidEqualityIndex -lt $creationDateIndex -and $creationDateIndex -lt $startTicksIndex -and $startTicksIndex -lt $exactStartIndex -and $exactStartIndex -lt $confirmedStopIndex) 'Final recovery must verify exact expected process start ticks before stopping'
 Assert-True ($commandRevalidationIndex -gt $freshCimIndex -and $commandRevalidationIndex -lt $confirmedStopIndex) 'Final recovery must revalidate the command line before stopping'
+Assert-True ($watchdog -notmatch "Write-WatchdogEvent 'watchdog_refresh_task_current'") 'Healthy refresh-task checks must not churn the event log'
+Assert-True ($watchdog -notmatch "Write-WatchdogEvent 'watchdog_refresh_task_check_skipped'") 'Routine skipped refresh-task checks must not churn the event log'
+Assert-True ($ensureGaugeRunningText -match '(?s)if\s*\(\$status\s*-ne\s*''fresh''\)\s*\{\s*Write-WatchdogEvent\s+''watchdog_heartbeat_status''') 'Fresh heartbeat checks must avoid event-log churn while retaining unhealthy status events'
 Assert-True ($watchdog -match 'Write-WatchdogEvent') 'Watchdog must write token-free diagnostic events'
 Assert-True ($watchdog -match 'Limit-WatchdogEventLog') 'Watchdog must rotate diagnostic logs'
 Assert-True ($watchdog -match 'LogRetentionDays') 'Watchdog log rotation must use day-based retention'
