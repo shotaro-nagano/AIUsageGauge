@@ -107,6 +107,12 @@ Assert-True ($start -match 'Load-GaugeUiState') 'Gauge must restore persisted dr
 Assert-True ($getWorkingAreasText -match '\[System\.Windows\.Forms\.Screen\]::AllScreens') 'Gauge must enumerate all active monitor working areas'
 Assert-True ($getWorkingAreasText -match 'PresentationSource.*?CompositionTarget' -and $getWorkingAreasText -match 'TransformFromDevice') 'Gauge must transform physical screen coordinates to WPF DIPs when a presentation source is available'
 Assert-True ($getWorkingAreasText -match '\[System\.Windows\.SystemParameters\]::WorkArea') 'Gauge must fall back to the WPF working area when screen enumeration or transformation fails'
+Assert-True ($getWorkingAreasText -notmatch '(?s)else\s*\{\s*\[pscustomobject\]@\{\s*Left\s*=\s*\[double\]\$workingArea\.Left.*?Bottom\s*=\s*\[double\]\$workingArea\.Bottom') 'A missing DPI transform must not expose Screen.WorkingArea physical pixels as WPF DIPs'
+$missingTransformFallbackPattern = '(?s)if\s*\(\$null\s*-eq\s*\$transform\)\s*\{\s*\$fallback\s*=\s*\[System\.Windows\.SystemParameters\]::WorkArea\s*return\s*,\(\[pscustomobject\]@\{\s*Left\s*=\s*\$fallback\.Left\s*Top\s*=\s*\$fallback\.Top\s*Right\s*=\s*\$fallback\.Right\s*Bottom\s*=\s*\$fallback\.Bottom\s*\}\)\s*\}'
+Assert-True ($getWorkingAreasText -match $missingTransformFallbackPattern) 'A missing DPI transform must immediately return exactly one WPF SystemParameters.WorkArea'
+$missingTransformFallbackIndex = $getWorkingAreasText.IndexOf('if ($null -eq $transform)')
+$screenEnumerationIndex = $getWorkingAreasText.IndexOf('[System.Windows.Forms.Screen]::AllScreens')
+Assert-True ($missingTransformFallbackIndex -ge 0 -and $screenEnumerationIndex -gt $missingTransformFallbackIndex) 'Screen.AllScreens must only be enumerated after a valid DPI transform is available'
 Assert-True ($updatePositionText -match '(?s)\$desiredLeft\s*=\s*\$base\.Left\s*\+\s*\$script:ManualOffsetX.*?\$desiredTop\s*=\s*\$base\.Top\s*\+\s*\$script:ManualOffsetY') 'Position updates must start from the pet base plus persisted manual offsets'
 Assert-True ($updatePositionText -match 'ConvertTo-VisibleGaugePosition') 'Update-Position must clamp the desired gauge position to an active monitor'
 Assert-True ($updatePositionText -match '(?s)\$screenMargin\s*=\s*6.*?ScreenMargin') 'Position clamping must default ScreenMargin to 6 before Task 5 adds the setting'

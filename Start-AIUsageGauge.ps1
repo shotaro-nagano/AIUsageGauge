@@ -711,11 +711,6 @@ function ConvertTo-VisibleGaugePosition {
 
 function Get-GaugeWorkingAreas($Window) {
     try {
-        $screens = @([System.Windows.Forms.Screen]::AllScreens)
-        if ($screens.Count -eq 0) {
-            throw 'No active screens were reported.'
-        }
-
         $transform = $null
         if ($null -ne $Window) {
             $presentationSource = [System.Windows.PresentationSource]::FromVisual($Window)
@@ -724,29 +719,35 @@ function Get-GaugeWorkingAreas($Window) {
             }
         }
 
+        if ($null -eq $transform) {
+            $fallback = [System.Windows.SystemParameters]::WorkArea
+            return ,([pscustomobject]@{
+                Left = $fallback.Left
+                Top = $fallback.Top
+                Right = $fallback.Right
+                Bottom = $fallback.Bottom
+            })
+        }
+
+        $screens = @([System.Windows.Forms.Screen]::AllScreens)
+        if ($screens.Count -eq 0) {
+            throw 'No active screens were reported.'
+        }
+
         $workingAreas = @(
             foreach ($screen in $screens) {
                 $workingArea = $screen.WorkingArea
-                if ($null -ne $transform) {
-                    $topLeft = $transform.Transform(
-                        [System.Windows.Point]::new($workingArea.Left, $workingArea.Top)
-                    )
-                    $bottomRight = $transform.Transform(
-                        [System.Windows.Point]::new($workingArea.Right, $workingArea.Bottom)
-                    )
-                    [pscustomobject]@{
-                        Left = $topLeft.X
-                        Top = $topLeft.Y
-                        Right = $bottomRight.X
-                        Bottom = $bottomRight.Y
-                    }
-                } else {
-                    [pscustomobject]@{
-                        Left = [double]$workingArea.Left
-                        Top = [double]$workingArea.Top
-                        Right = [double]$workingArea.Right
-                        Bottom = [double]$workingArea.Bottom
-                    }
+                $topLeft = $transform.Transform(
+                    [System.Windows.Point]::new($workingArea.Left, $workingArea.Top)
+                )
+                $bottomRight = $transform.Transform(
+                    [System.Windows.Point]::new($workingArea.Right, $workingArea.Bottom)
+                )
+                [pscustomobject]@{
+                    Left = $topLeft.X
+                    Top = $topLeft.Y
+                    Right = $bottomRight.X
+                    Bottom = $bottomRight.Y
                 }
             }
         )
