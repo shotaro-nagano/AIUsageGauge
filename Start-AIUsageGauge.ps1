@@ -637,6 +637,134 @@ function Start-ClaudeRelogin {
     }
 }
 
+function ConvertTo-VisibleGaugePosition {
+    param(
+        [double]$Left,
+        [double]$Top,
+        [double]$Width,
+        [double]$Height,
+        [AllowNull()]
+        [object[]]$WorkingAreas,
+        [double]$Margin = 6
+    )
+
+    $areas = @($WorkingAreas | Where-Object { $null -ne $_ })
+    if ($areas.Count -eq 0) {
+        return [pscustomobject]@{ Left = $Left; Top = $Top; Corrected = $false }
+    }
+
+    $desiredCenterX = $Left + ($Width / 2)
+    $desiredCenterY = $Top + ($Height / 2)
+    $selectedArea = $null
+    $minimumDistanceSquared = [double]::PositiveInfinity
+
+    foreach ($area in $areas) {
+        $areaLeft = [Math]::Min([double]$area.Left, [double]$area.Right)
+        $areaTop = [Math]::Min([double]$area.Top, [double]$area.Bottom)
+        $areaRight = [Math]::Max([double]$area.Left, [double]$area.Right)
+        $areaBottom = [Math]::Max([double]$area.Top, [double]$area.Bottom)
+        $nearestX = [Math]::Max($areaLeft, [Math]::Min($desiredCenterX, $areaRight))
+        $nearestY = [Math]::Max($areaTop, [Math]::Min($desiredCenterY, $areaBottom))
+        $distanceSquared = [Math]::Pow($desiredCenterX - $nearestX, 2) +
+            [Math]::Pow($desiredCenterY - $nearestY, 2)
+
+        if ($distanceSquared -lt $minimumDistanceSquared) {
+            $minimumDistanceSquared = $distanceSquared
+            $selectedArea = [pscustomobject]@{
+                Left = $areaLeft
+                Top = $areaTop
+                Right = $areaRight
+                Bottom = $areaBottom
+            }
+        }
+    }
+
+    if ($null -eq $selectedArea) {
+        return [pscustomobject]@{ Left = $Left; Top = $Top; Corrected = $false }
+    }
+
+    $safeMargin = [Math]::Max(0, $Margin)
+    $minimumLeft = $selectedArea.Left + $safeMargin
+    $maximumLeft = $selectedArea.Right - $safeMargin - $Width
+    $minimumTop = $selectedArea.Top + $safeMargin
+    $maximumTop = $selectedArea.Bottom - $safeMargin - $Height
+
+    if ($minimumLeft -le $maximumLeft) {
+        $safeLeft = [Math]::Max($minimumLeft, [Math]::Min($Left, $maximumLeft))
+    } else {
+        $safeLeft = $selectedArea.Left + (($selectedArea.Right - $selectedArea.Left - $Width) / 2)
+    }
+
+    if ($minimumTop -le $maximumTop) {
+        $safeTop = [Math]::Max($minimumTop, [Math]::Min($Top, $maximumTop))
+    } else {
+        $safeTop = $selectedArea.Top + (($selectedArea.Bottom - $selectedArea.Top - $Height) / 2)
+    }
+
+    [pscustomobject]@{
+        Left = $safeLeft
+        Top = $safeTop
+        Corrected = ([Math]::Abs($safeLeft - $Left) -gt 0.5) -or
+            ([Math]::Abs($safeTop - $Top) -gt 0.5)
+    }
+}
+
+function Get-GaugeWorkingAreas($Window) {
+    try {
+        $screens = @([System.Windows.Forms.Screen]::AllScreens)
+        if ($screens.Count -eq 0) {
+            throw 'No active screens were reported.'
+        }
+
+        $transform = $null
+        if ($null -ne $Window) {
+            $presentationSource = [System.Windows.PresentationSource]::FromVisual($Window)
+            if ($null -ne $presentationSource -and $null -ne $presentationSource.CompositionTarget) {
+                $transform = $presentationSource.CompositionTarget.TransformFromDevice
+            }
+        }
+
+        $workingAreas = @(
+            foreach ($screen in $screens) {
+                $workingArea = $screen.WorkingArea
+                if ($null -ne $transform) {
+                    $topLeft = $transform.Transform(
+                        [System.Windows.Point]::new($workingArea.Left, $workingArea.Top)
+                    )
+                    $bottomRight = $transform.Transform(
+                        [System.Windows.Point]::new($workingArea.Right, $workingArea.Bottom)
+                    )
+                    [pscustomobject]@{
+                        Left = $topLeft.X
+                        Top = $topLeft.Y
+                        Right = $bottomRight.X
+                        Bottom = $bottomRight.Y
+                    }
+                } else {
+                    [pscustomobject]@{
+                        Left = [double]$workingArea.Left
+                        Top = [double]$workingArea.Top
+                        Right = [double]$workingArea.Right
+                        Bottom = [double]$workingArea.Bottom
+                    }
+                }
+            }
+        )
+
+        if ($workingAreas.Count -gt 0) {
+            return $workingAreas
+        }
+    } catch {}
+
+    $fallback = [System.Windows.SystemParameters]::WorkArea
+    return ,([pscustomobject]@{
+        Left = $fallback.Left
+        Top = $fallback.Top
+        Right = $fallback.Right
+        Bottom = $fallback.Bottom
+    })
+}
+
 function Get-PetGaugePosition($WindowWidth, $WindowHeight) {
     $fallback = [pscustomobject]@{
         Left = [System.Windows.SystemParameters]::WorkArea.Right - $WindowWidth - 24
@@ -841,7 +969,7 @@ $window.Add_MouseLeftButtonDown({
         $base = Get-PetGaugePosition $window.Width $window.Height
         $script:ManualOffsetX = $window.Left - $base.Left
         $script:ManualOffsetY = $window.Top - $base.Top
-        Save-GaugeUiState -ManualOffsetX $script:ManualOffsetX -ManualOffsetY $script:ManualOffsetY
+        Update-Position -PersistPosition
     } catch {}
 })
 $window.Add_MouseRightButtonUp({
@@ -849,9 +977,43 @@ $window.Add_MouseRightButtonUp({
 })
 
 function Update-Position {
-    $pos = Get-PetGaugePosition $window.Width $window.Height
-    $window.Left = $pos.Left + $script:ManualOffsetX
-    $window.Top = $pos.Top + $script:ManualOffsetY
+    param([switch]$PersistPosition)
+
+    $base = Get-PetGaugePosition $window.Width $window.Height
+    $desiredLeft = $base.Left + $script:ManualOffsetX
+    $desiredTop = $base.Top + $script:ManualOffsetY
+    $screenMargin = 6
+    if ($Settings.PSObject.Properties.Name -contains 'ScreenMargin') {
+        try {
+            $screenMargin = [double]$Settings.ScreenMargin
+        } catch {
+            $screenMargin = 6
+        }
+    }
+
+    $workingAreas = @(Get-GaugeWorkingAreas $window)
+    $safePosition = ConvertTo-VisibleGaugePosition `
+        -Left $desiredLeft `
+        -Top $desiredTop `
+        -Width $window.Width `
+        -Height $window.Height `
+        -WorkingAreas $workingAreas `
+        -Margin $screenMargin
+
+    $window.Left = $safePosition.Left
+    $window.Top = $safePosition.Top
+
+    if ($safePosition.Corrected) {
+        $script:ManualOffsetX = $safePosition.Left - $base.Left
+        $script:ManualOffsetY = $safePosition.Top - $base.Top
+        Save-GaugeUiState -ManualOffsetX $script:ManualOffsetX -ManualOffsetY $script:ManualOffsetY
+        Write-AIUsageGaugeEvent 'window_position_corrected' @{
+            left = [Math]::Round($safePosition.Left, 1)
+            top = [Math]::Round($safePosition.Top, 1)
+        }
+    } elseif ($PersistPosition) {
+        Save-GaugeUiState -ManualOffsetX $script:ManualOffsetX -ManualOffsetY $script:ManualOffsetY
+    }
 }
 
 function Update-Usage {

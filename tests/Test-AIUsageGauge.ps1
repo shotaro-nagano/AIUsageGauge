@@ -63,6 +63,26 @@ $updateUsageAst = $startAst.Find({
 }, $true)
 Assert-True ($null -ne $updateUsageAst) 'Update-Usage function is missing'
 $updateUsageText = $updateUsageAst.Extent.Text
+$convertVisiblePositionAst = $startAst.Find({
+    param($ast)
+    $ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $ast.Name -eq 'ConvertTo-VisibleGaugePosition'
+}, $true)
+Assert-True ($null -ne $convertVisiblePositionAst) 'ConvertTo-VisibleGaugePosition function is missing'
+$getWorkingAreasAst = $startAst.Find({
+    param($ast)
+    $ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $ast.Name -eq 'Get-GaugeWorkingAreas'
+}, $true)
+Assert-True ($null -ne $getWorkingAreasAst) 'Get-GaugeWorkingAreas function is missing'
+$getWorkingAreasText = $getWorkingAreasAst.Extent.Text
+$updatePositionAst = $startAst.Find({
+    param($ast)
+    $ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $ast.Name -eq 'Update-Position'
+}, $true)
+Assert-True ($null -ne $updatePositionAst) 'Update-Position function is missing'
+$updatePositionText = $updatePositionAst.Extent.Text
 
 Assert-True ($start -match 'Global\\AIUsageGauge') 'Start script must create a named mutex'
 Assert-True ($start -match '再ログイン要') 'Expired Claude auth must show a relogin-required label'
@@ -84,6 +104,15 @@ Assert-True ($start -match 'Get-AIUsageGaugeSettings') 'Gauge must load external
 Assert-True ($start -match 'settings\.json') 'Gauge settings must live in settings.json'
 Assert-True ($start -match 'Save-GaugeUiState') 'Gauge must persist drag position state'
 Assert-True ($start -match 'Load-GaugeUiState') 'Gauge must restore persisted drag position state'
+Assert-True ($getWorkingAreasText -match '\[System\.Windows\.Forms\.Screen\]::AllScreens') 'Gauge must enumerate all active monitor working areas'
+Assert-True ($getWorkingAreasText -match 'PresentationSource.*?CompositionTarget' -and $getWorkingAreasText -match 'TransformFromDevice') 'Gauge must transform physical screen coordinates to WPF DIPs when a presentation source is available'
+Assert-True ($getWorkingAreasText -match '\[System\.Windows\.SystemParameters\]::WorkArea') 'Gauge must fall back to the WPF working area when screen enumeration or transformation fails'
+Assert-True ($updatePositionText -match '(?s)\$desiredLeft\s*=\s*\$base\.Left\s*\+\s*\$script:ManualOffsetX.*?\$desiredTop\s*=\s*\$base\.Top\s*\+\s*\$script:ManualOffsetY') 'Position updates must start from the pet base plus persisted manual offsets'
+Assert-True ($updatePositionText -match 'ConvertTo-VisibleGaugePosition') 'Update-Position must clamp the desired gauge position to an active monitor'
+Assert-True ($updatePositionText -match '(?s)\$screenMargin\s*=\s*6.*?ScreenMargin') 'Position clamping must default ScreenMargin to 6 before Task 5 adds the setting'
+Assert-True ($updatePositionText -match '(?s)if\s*\(\$safePosition\.Corrected\)\s*\{.*?\$script:ManualOffsetX\s*=\s*\$safePosition\.Left\s*-\s*\$base\.Left.*?\$script:ManualOffsetY\s*=\s*\$safePosition\.Top\s*-\s*\$base\.Top.*?Save-GaugeUiState.*?window_position_corrected') 'A corrected position must update and persist offsets before writing its diagnostic event'
+Assert-True ($start -match 'Update-Position\s+-PersistPosition') 'Drag completion must run clamping before persisting the position'
+Assert-True ($start -notmatch '(?is)Get-ChildItem\b.{0,200}(?:auth|credential|\.codex|\.claude)') 'Gauge auth lookup must not scan directories broadly'
 Assert-True ($start -match 'Show-AIUsageGaugeNotification') 'Gauge must support Windows notifications'
 Assert-True ($start -match 'NotifyIcon') 'Gauge notifications must use a Windows notification mechanism'
 Assert-True ($start -match 'Test-NotificationAllowed') 'Gauge must dedupe low-remaining notifications'
