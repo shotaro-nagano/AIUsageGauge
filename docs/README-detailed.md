@@ -115,6 +115,7 @@ The gauge writes `%LOCALAPPDATA%\AIUsageGauge\health.json` every 30 seconds. The
 - It uses the Claude Code OAuth access token only for the official `/api/oauth/usage` GET.
 - The usage check does not send a model request.
 - If the Claude OAuth token expires, the script may refresh it and write the refreshed values back to Claude Code's credentials file.
+- Access-token refresh remains automatic while the stored refresh login is valid. If that login itself expires, the gauge stops futile CLI retries, shows `relogin required`, and launches `claude auth login --claudeai` when clicked. The official browser approval cannot be automated. A warning appears three days before the stored refresh login expires.
 - It does not print, upload, or commit tokens.
 - Do not share your real `.codex` folder.
 - Do not share your real `.claude` folder.
@@ -249,6 +250,7 @@ pwsh -STA -ExecutionPolicy Bypass -File .\Start-AIUsageGauge.ps1 -Placement righ
 - Claude Code のOAuthアクセストークンは、公式 `/api/oauth/usage` GET のためだけに使います。
 - 使用量確認ではモデルリクエストを送信しません。
 - Claude のOAuthトークンが期限切れの場合、refreshして Claude Code の認証ファイルへ書き戻す場合があります。
+- 保存済みrefresh loginが有効な間はaccess tokenを自動更新します。refresh login自体が期限切れになった場合は、無効なCLI再試行を止めて「再ログイン要」を表示し、クリック時に `claude auth login --claudeai` を直接起動します。公式ブラウザでのアカウント承認だけは自動化できません。期限の3日前から更新警告を表示します。
 - トークンを表示、アップロード、Gitコミットする処理はありません。
 - 自分の `.codex` フォルダを共有しないでください。
 - 自分の `.claude` フォルダを共有しないでください。

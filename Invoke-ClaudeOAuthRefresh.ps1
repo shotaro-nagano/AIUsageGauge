@@ -11,6 +11,11 @@ $EventLogPath = Join-Path $EventLogDir 'events.log'
 $MaxEventLogBytes = 262144
 $HealthWatchdogPath = Join-Path $PSScriptRoot 'Watch-AIUsageGaugeHealth.ps1'
 $SettingsPath = Join-Path $PSScriptRoot 'settings.json'
+$CredentialStateScriptPath = Join-Path $PSScriptRoot 'ClaudeCredentialState.ps1'
+if (!(Test-Path -LiteralPath $CredentialStateScriptPath)) {
+    throw 'ClaudeCredentialState.ps1 was not found.'
+}
+. $CredentialStateScriptPath
 
 function Get-EventLogRetentionDays {
     try {
@@ -163,17 +168,28 @@ try {
     Invoke-AIUsageGaugeHealthWatchdog
 
     $now = [DateTimeOffset]::UtcNow
-    $expiresAt = Get-CredentialExpiry -Path $CredentialsPath
-    $remaining = ($expiresAt - $now).TotalSeconds
+    if (!(Test-Path -LiteralPath $CredentialsPath)) {
+        Write-RefreshEvent 'refresh_login_required'
+        Write-Status 'login_required'
+        exit 0
+    }
 
-    if ($remaining -gt $RefreshWindowSeconds) {
-        Write-RefreshEvent 'refresh_skipped_fresh' @{ expiresAt = $expiresAt.ToString('o'); remainingSeconds = [int]$remaining }
-        Write-Status ('fresh_until {0:o}' -f $expiresAt)
+    $credentials = Get-Content -Raw -LiteralPath $CredentialsPath | ConvertFrom-Json
+    $credentialDecision = Get-ClaudeCredentialRefreshDecision -Credentials $credentials -Now $now -RefreshWindowSeconds $RefreshWindowSeconds
+    if ($credentialDecision.Decision -eq 'login_required') {
+        Write-RefreshEvent 'refresh_login_required'
+        Write-Status 'login_required'
+        exit 0
+    }
+    if ($credentialDecision.Decision -eq 'fresh') {
+        $remaining = ($credentialDecision.AccessExpiresAt - $now).TotalSeconds
+        Write-RefreshEvent 'refresh_skipped_fresh' @{ expiresAt = $credentialDecision.AccessExpiresAt.ToString('o'); remainingSeconds = [int]$remaining }
+        Write-Status ('fresh_until {0:o}' -f $credentialDecision.AccessExpiresAt)
         exit 0
     }
 
     $claude = Get-ClaudeCliPath -Root $ClaudeCodeRoot
-    Write-RefreshEvent 'refresh_cli_start' @{ expiresAt = $expiresAt.ToString('o') }
+    Write-RefreshEvent 'refresh_cli_start'
     & $claude -p 'Respond with exactly OK.' --output-format text --model haiku --no-session-persistence *> $null
     $cliExit = $LASTEXITCODE
     if ($cliExit -ne 0) {
@@ -182,15 +198,21 @@ try {
         exit $cliExit
     }
 
-    $afterExpiresAt = Get-CredentialExpiry -Path $CredentialsPath
-    if ($afterExpiresAt -le ([DateTimeOffset]::UtcNow.AddSeconds($RefreshWindowSeconds))) {
-        Write-RefreshEvent 'refresh_did_not_extend_credentials' @{ expiresAt = $afterExpiresAt.ToString('o') }
+    $updatedCredentials = Get-Content -Raw -LiteralPath $CredentialsPath | ConvertFrom-Json
+    $updatedDecision = Get-ClaudeCredentialRefreshDecision -Credentials $updatedCredentials -RefreshWindowSeconds $RefreshWindowSeconds
+    if ($updatedDecision.Decision -eq 'login_required') {
+        Write-RefreshEvent 'refresh_login_required'
+        Write-Status 'login_required'
+        exit 0
+    }
+    if ($updatedDecision.Decision -ne 'fresh') {
+        Write-RefreshEvent 'refresh_did_not_extend_credentials'
         Write-Status 'refresh_did_not_extend_credentials'
         exit 20
     }
 
-    Write-RefreshEvent 'refresh_cli_success' @{ expiresAt = $afterExpiresAt.ToString('o') }
-    Write-Status ('refreshed_until {0:o}' -f $afterExpiresAt)
+    Write-RefreshEvent 'refresh_cli_success' @{ expiresAt = $updatedDecision.AccessExpiresAt.ToString('o') }
+    Write-Status ('refreshed_until {0:o}' -f $updatedDecision.AccessExpiresAt)
     exit 0
 } catch {
     Write-RefreshEvent 'refresh_helper_error' @{ error = $_.Exception.Message }

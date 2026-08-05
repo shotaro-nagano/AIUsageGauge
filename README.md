@@ -123,7 +123,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\Install-AIUsageGauge.ps1
 
 ## Claude OAuth 自動更新
 
-Claude Code の標準 CLI は、OAuth アクセストークンの有効期限が十分残っている間は `.credentials.json` を更新しません。確認した Claude Code 2.1.149 では、残り時間が短いときだけ CLI 内部の refresh が動く挙動でした。
+Claude Code の標準 CLI は、OAuth アクセストークンの有効期限が十分残っている間は `.credentials.json` を更新しません。AI Usage Gauge はaccess tokenが失効直前になったときだけ、CLI内部の標準refreshを利用します。
 
 このため、AI Usage Gauge は `platform.claude.com/v1/oauth/token` を直接叩かず、期限切れ直前または期限切れ時だけ同梱の `Invoke-ClaudeOAuthRefresh.ps1` から標準 `claude.exe` を短時間起動します。通常時はローカルの `expiresAt` を読むだけで、トークン値は表示しません。
 
@@ -134,6 +134,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\Install-ClaudeOAuthRefreshTask.p
 ```
 
 登録されるタスクは、5分ごとにローカルの `expiresAt` だけを確認し、残り30秒以内または失効済みのときだけ Claude CLI を起動します。期限が十分残っている通常時は、OAuth エンドポイントも Claude CLI も呼びません。
+
+access tokenとは別に、`/login`で作られたrefresh login自体にも期限があります。refresh tokenが有効な間は自動更新できますが、refresh loginまで期限切れになった後は、新しい認証情報を端末だけで生成することはできません。その場合はCLIの無効な再試行を止め、ゲージに `🔑 再ログイン要` を表示します。refresh loginの期限が3日以内に近づいた場合は、失効前に `login renewal due` と通知します。
 
 ログオン時とスリープ復帰時にも同じ helper を実行するため、PC 再起動や長時間スリープ後も手動操作なしで復帰しやすくしています。タスクは `wscript.exe` 経由で非表示実行されるため、通常の期限チェックでターミナルは開きません。
 
@@ -162,7 +164,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\Show-AIUsageGaugeStatus.ps1 -Jso
 - ドラッグ: ゲージ位置を調整
 - 右クリック: ゲージを閉じる
 
-Claude の認証が失効して自動更新できない場合は、Claude 欄に `🔑 再ログイン要` と表示します。その表示をクリックすると、デスクトップの `Claude再ログイン.lnk` または同梱の `Claude-relogin.cmd` を起動します。
+Claude の認証が失効して自動更新できない場合は、Claude 欄に `🔑 再ログイン要` と表示します。その表示をクリックすると、同梱の `Claude-relogin.cmd` が現在の標準CLIを検出して `claude auth login --claudeai` を直接起動します。コマンド入力は不要ですが、Anthropic公式のブラウザ画面でアカウント承認が1回必要です。
 
 ドラッグで移動した場合、その起動中は CodexPets からの相対位置として追従します。
 

@@ -12,6 +12,11 @@ $ScriptDir = if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) {
     $PSScriptRoot
 }
 $SettingsPath = Join-Path $ScriptDir 'settings.json'
+$ClaudeCredentialStatePath = Join-Path $ScriptDir 'ClaudeCredentialState.ps1'
+if (!(Test-Path -LiteralPath $ClaudeCredentialStatePath)) {
+    throw 'ClaudeCredentialState.ps1 was not found.'
+}
+. $ClaudeCredentialStatePath
 
 function New-DefaultAIUsageGaugeSettings {
     [pscustomobject]@{
@@ -662,24 +667,29 @@ function Get-ClaudeUsage {
     }
 
     $creds = Get-Content -LiteralPath $ClaudeCredsPath -Raw | ConvertFrom-Json
-    $token = $creds.claudeAiOauth.accessToken
-    if ([string]::IsNullOrWhiteSpace($token)) {
-        throw "Claude access token was not found in .credentials.json"
+    $now = [DateTimeOffset]::UtcNow
+    $credentialDecision = Get-ClaudeCredentialRefreshDecision -Credentials $creds -Now $now -RefreshWindowSeconds 30
+    if ($credentialDecision.Decision -eq 'login_required') {
+        throw 'AIUG_LOGIN_REQUIRED'
     }
+    $token = $creds.claudeAiOauth.accessToken
 
     # --- Option B: 先回り refresh + ファイル再読込 + 429 バックオフ ---
-    $now = [DateTimeOffset]::UtcNow
-    $expiresAt = [DateTimeOffset]::FromUnixTimeMilliseconds($creds.claudeAiOauth.expiresAt)
+    $expiresAt = $credentialDecision.AccessExpiresAt
     # Claude CLI は残り30秒以下で同期 refresh するため、直接エンドポイントは叩かずCLIに任せる
-    $needRefresh = $now -gt $expiresAt.AddSeconds(-30)
+    $needRefresh = $credentialDecision.Decision -eq 'refresh'
 
     if ($needRefresh) {
         # 他クライアント(Claude Code等)が既に更新しているかもしれないので読み直す
         try {
             $creds = Get-Content -LiteralPath $ClaudeCredsPath -Raw | ConvertFrom-Json
+            $credentialDecision = Get-ClaudeCredentialRefreshDecision -Credentials $creds -Now $now -RefreshWindowSeconds 30
+            if ($credentialDecision.Decision -eq 'login_required') {
+                throw 'AIUG_LOGIN_REQUIRED'
+            }
             $token = $creds.claudeAiOauth.accessToken
-            $expiresAt = [DateTimeOffset]::FromUnixTimeMilliseconds($creds.claudeAiOauth.expiresAt)
-            $needRefresh = $now -gt $expiresAt.AddSeconds(-30)
+            $expiresAt = $credentialDecision.AccessExpiresAt
+            $needRefresh = $credentialDecision.Decision -eq 'refresh'
         } catch {
             Write-AIUsageGaugeEvent 'credentials_reread_failed' @{ error = $_.Exception.Message }
         }
@@ -690,7 +700,9 @@ function Get-ClaudeUsage {
         $backoffUntil = if ($state.backoffUntil) { [DateTimeOffset]::Parse($state.backoffUntil) } else { [DateTimeOffset]::MinValue }
         if ($now -lt $backoffUntil) {
             # バックオフ中は refresh を叩かない。完全失効なら使えない
-            if ($now -gt $expiresAt) { throw "AIUG_TOKEN_EXPIRED" }
+            if ([string]::IsNullOrWhiteSpace($token) -or $null -eq $expiresAt -or $now -gt $expiresAt) {
+                throw 'AIUG_TOKEN_EXPIRED'
+            }
         } else {
             try {
                 $token = Invoke-ClaudeTokenRefresh $creds
@@ -700,7 +712,9 @@ function Get-ClaudeUsage {
                 $backoff = if ($is429) { $now.AddMinutes(60) } else { $now.AddMinutes(5) }
                 Set-RefreshState ([pscustomobject]@{ backoffUntil = $backoff.ToString('o'); lastSuccess = $state.lastSuccess })
                 Write-AIUsageGaugeEvent 'foreground_refresh_error' @{ error = $_.Exception.Message; backoffUntil = $backoff.ToString('o') }
-                if ($now -gt $expiresAt) { throw "AIUG_TOKEN_EXPIRED" }
+                if ([string]::IsNullOrWhiteSpace($token) -or $null -eq $expiresAt -or $now -gt $expiresAt) {
+                    throw 'AIUG_TOKEN_EXPIRED'
+                }
                 # まだ少し有効なら古いトークンのまま続行
             }
         }
@@ -711,7 +725,10 @@ function Get-ClaudeUsage {
         'anthropic-client-name' = 'claude-code'
     }
     $usageResponse = Invoke-RestMethod -Uri $ClaudeUsageUri -Method GET -Headers $headers -TimeoutSec 20
-    return Convert-ClaudeUsageResponse -UsageResponse $usageResponse
+    $usage = Convert-ClaudeUsageResponse -UsageResponse $usageResponse
+    $usage | Add-Member -NotePropertyName LoginRenewalDue -NotePropertyValue ([bool]$credentialDecision.LoginRenewalDue)
+    $usage | Add-Member -NotePropertyName LoginExpiresAt -NotePropertyValue $credentialDecision.RefreshExpiresAt
+    return $usage
 }
 
 function Start-ClaudeRelogin {
@@ -1243,12 +1260,17 @@ function Update-Usage {
             $claudeTitle.Text = 'Claude rate'
             $script:ClaudeNeedsRelogin = $false
             Set-GaugeServiceHealth -Service claude -Status ok -SuccessAt ([DateTimeOffset]::UtcNow)
+            if ($cl.LoginRenewalDue) {
+                $claudeFooter.Text = 'login renewal due'
+                $script:ClaudeNeedsRelogin = $true
+                Show-AIUsageGaugeNotification -Key 'Claude-login-renewal' -Title 'AI Usage Gauge' -Message 'Claude login renewal is due.' -Icon 'Warning'
+            }
         }
     } catch {
         $claudeTitle.Text = 'Claude rate'
         $errMsg = $_.Exception.Message
         Set-GaugeServiceHealth -Service claude -Status (Get-GaugeServiceFailureStatus $errMsg)
-        if ($errMsg -match 'AIUG_TOKEN_EXPIRED|401|Unauthorized') {
+        if ($errMsg -match 'AIUG_TOKEN_EXPIRED|AIUG_LOGIN_REQUIRED|401|Unauthorized') {
             Set-RowUnavailable $claude5hRow
             Set-RowUnavailable $claude7dRow
             Set-RowUnavailable $claudeFableRow

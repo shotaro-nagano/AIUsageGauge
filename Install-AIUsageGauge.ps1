@@ -164,6 +164,7 @@ function New-ReleasePackage {
         'Start-AIUsageGauge.ps1',
         'Start-AIUsageGauge.cmd',
         'Start-AIUsageGauge-hidden.vbs',
+        'ClaudeCredentialState.ps1',
         'Invoke-ClaudeOAuthRefresh.ps1',
         'Invoke-ClaudeOAuthRefresh-hidden.vbs',
         'Install-ClaudeOAuthRefreshTask.ps1',
