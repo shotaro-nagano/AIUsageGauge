@@ -255,7 +255,7 @@ function Set-GaugeServiceHealth {
 function Get-GaugeServiceFailureStatus {
     param([string]$Message)
 
-    if ($Message -match 'AIUG_TOKEN_EXPIRED|401|Unauthorized|auth|access token|credentials file') {
+    if ($Message -match 'AIUG_TOKEN_EXPIRED|AIUG_LOGIN_REQUIRED|401|Unauthorized|auth|access token|credentials file') {
         return 'auth'
     }
     if ($Message -match '429|rate.limit|Too Many|Rate') {

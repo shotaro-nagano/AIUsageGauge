@@ -81,11 +81,26 @@ $start = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'Start-AIUsageGauge.
 $helper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'Invoke-ClaudeOAuthRefresh.ps1')
 $relogin = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'Claude-relogin.cmd')
 $installer = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'Install-AIUsageGauge.ps1')
+$tokens = $null
+$parseErrors = $null
+$startAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $RepoRoot 'Start-AIUsageGauge.ps1'),
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+Assert-Equal 0 $parseErrors.Count 'Start script must parse before function inspection'
+$failureStatusFunction = $startAst.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'Get-GaugeServiceFailureStatus'
+}, $true)
+Assert-True ($null -ne $failureStatusFunction) 'Get-GaugeServiceFailureStatus is missing'
 
 Assert-True ($start -match 'ClaudeCredentialState\.ps1') 'Gauge must load the shared credential decision'
 Assert-True ($helper -match 'ClaudeCredentialState\.ps1') 'Refresh helper must load the shared credential decision'
 Assert-True ($start -match 'AIUG_LOGIN_REQUIRED') 'Gauge must use a stable login-required error'
 Assert-True ($start -match "AIUG_TOKEN_EXPIRED\|AIUG_LOGIN_REQUIRED") 'UI must show relogin for both expired and missing credentials'
+Assert-True ($failureStatusFunction.Extent.Text -match 'AIUG_LOGIN_REQUIRED') 'Login-required health must be classified as auth'
 Assert-True ($start -match 'login renewal due') 'Gauge must warn before the refresh login expires'
 Assert-True ($helper -match "'refresh_login_required'") 'Refresh helper must log the token-free login-required state'
 $decisionIndex = $helper.IndexOf("'login_required'")
