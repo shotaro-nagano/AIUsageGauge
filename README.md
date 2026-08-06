@@ -137,7 +137,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\Install-ClaudeOAuthRefreshTask.p
 
 access tokenとは別に、`/login`で作られたrefresh login自体にも期限があります。refresh tokenが有効な間は自動更新できますが、refresh loginまで期限切れになった後は、新しい認証情報を端末だけで生成することはできません。その場合はCLIの無効な再試行を止め、ゲージに `🔑 再ログイン要` を表示します。refresh loginの期限が3日以内に近づいた場合は、失効前に `login renewal due` と通知します。
 
-ログオン時とスリープ復帰時にも同じ helper を実行するため、PC 再起動や長時間スリープ後も手動操作なしで復帰しやすくしています。タスクは `wscript.exe` 経由で非表示実行されるため、通常の期限チェックでターミナルは開きません。
+ログオン時とスリープ復帰時にも同じ helper を実行します。従来の復帰イベントに加え、Surface などの Modern Standby 復帰（`Microsoft-Windows-Kernel-Power` / Event ID `507`）にも対応し、PC 再起動や長時間スリープ後に直ちに自己復旧します。タスクは `wscript.exe` 経由で非表示実行されるため、通常の期限チェックでターミナルは開きません。
 
 ## Watchdog と診断
 

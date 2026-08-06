@@ -41,6 +41,12 @@ $watchdog = Get-Content -Raw -LiteralPath $watchdogScript
 $appInstaller = Get-Content -Raw -LiteralPath $appInstallerScript
 $settings = Get-Content -Raw -LiteralPath $settingsFile
 
+Assert-True ($installer -match "Microsoft-Windows-Power-Troubleshooter") 'Refresh task must retain the classic resume trigger'
+Assert-True ($installer -match "Microsoft-Windows-Kernel-Power") 'Refresh task must subscribe to Modern Standby resume events'
+Assert-True ($installer -match "EventID=507") 'Refresh task must run when Modern Standby exits'
+Assert-True ($start -match "Microsoft-Windows-Kernel-Power" -and $start -match "EventID=507") 'Gauge startup must repair refresh tasks missing the Modern Standby trigger'
+Assert-True ($watchdog -match "Microsoft-Windows-Kernel-Power" -and $watchdog -match "EventID=507") 'Watchdog must repair refresh tasks missing the Modern Standby trigger'
+
 $tokens = $null
 $parseErrors = $null
 $startAst = [System.Management.Automation.Language.Parser]::ParseFile(

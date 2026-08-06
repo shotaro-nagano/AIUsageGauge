@@ -68,6 +68,7 @@ $wakeTrigger.Subscription = @'
 <QueryList>
   <Query Id="0" Path="System">
     <Select Path="System">*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and EventID=1]]</Select>
+    <Select Path="System">*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and EventID=507]]</Select>
   </Query>
 </QueryList>
 '@

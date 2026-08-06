@@ -419,10 +419,17 @@ function Test-ClaudeRefreshTaskCurrent {
         $task = Get-ScheduledTask -TaskPath '\AIUsageGauge\' -TaskName 'ClaudeOAuthRefresh' -ErrorAction Stop
         $action = $task.Actions | Select-Object -First 1
         $expectedWscript = Join-Path $env:WINDIR 'System32\wscript.exe'
+        $wakeSubscription = @(
+            $task.Triggers |
+                Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskEventTrigger' -and [bool]$_.Enabled } |
+                ForEach-Object { [string]$_.Subscription }
+        ) -join "`n"
         return (
             $null -ne $action -and
             $action.Execute -ieq $expectedWscript -and
             $action.Arguments -like '*Invoke-ClaudeOAuthRefresh-hidden.vbs*' -and
+            $wakeSubscription -match "Microsoft-Windows-Power-Troubleshooter.*EventID=1" -and
+            $wakeSubscription -match "Microsoft-Windows-Kernel-Power.*EventID=507" -and
             [bool]$task.Settings.Hidden
         )
     } catch {

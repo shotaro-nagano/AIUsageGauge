@@ -240,7 +240,7 @@ pwsh -STA -ExecutionPolicy Bypass -File .\Start-AIUsageGauge.ps1 -Placement righ
 
 ### 自己診断と自動復旧
 
-ゲージは `%LOCALAPPDATA%\AIUsageGauge\health.json` へ30秒ごとにトークンを含まない heartbeat を書きます。Watchdog は10分以上止まった状態をもう一度確認し、復帰しない場合だけ再起動します。停止直前にPID、正確な開始時刻、Windows実引数、正規の `-File ... Start-AIUsageGauge.ps1` パスを再検証し、その1プロセスだけを停止します。無関係な PowerShell プロセスは停止しません。スリープ復帰時は heartbeat を直ちに更新します。
+ゲージは `%LOCALAPPDATA%\AIUsageGauge\health.json` へ30秒ごとにトークンを含まない heartbeat を書きます。Watchdog は10分以上止まった状態をもう一度確認し、復帰しない場合だけ再起動します。停止直前にPID、正確な開始時刻、Windows実引数、正規の `-File ... Start-AIUsageGauge.ps1` パスを再検証し、その1プロセスだけを停止します。無関係な PowerShell プロセスは停止しません。従来のスリープ復帰イベントと Modern Standby 復帰（`Microsoft-Windows-Kernel-Power` / Event ID `507`）の両方で helper を実行し、heartbeat と表示を直ちに復旧します。
 
 ### セキュリティ
 
