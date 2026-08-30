@@ -16,13 +16,13 @@
 - Modify: `tests/Test-AIUsageGauge.ps1`
 - Modify: `tests/Test-CodexWindowMapping.ps1`
 
-- [ ] **Step 1: Write the failing static and mapping assertions**
+- [x] **Step 1: Write the failing static and mapping assertions**
 
 Require one `codex5hRow` labeled `5h`, one `codex7dRow` labeled `7d`, nullable
 rendering and low-quota notification for `ShortRemaining` and `LongRemaining`,
 and a footer using both optional reset durations.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 Run:
 
@@ -39,20 +39,20 @@ Expected: assertions fail because the UI still renders only `weeklyRow` as
 **Files:**
 - Modify: `Start-AIUsageGauge.ps1`
 
-- [ ] **Step 1: Add the Codex rows and fixed height**
+- [x] **Step 1: Add the Codex rows and fixed height**
 
 Create `codex5hRow = New-Row '5h'` and `codex7dRow = New-Row '7d'` in that
 order, initialize both unavailable, and increase the window height enough for
 one additional compact row.
 
-- [ ] **Step 2: Render both classified windows**
+- [x] **Step 2: Render both classified windows**
 
 Guard `Set-Row` and `Notify-IfLowRemaining` independently for
 `ShortRemaining` and `LongRemaining`; otherwise call `Set-RowUnavailable`.
 Set the footer with `Format-OptionalDuration $usage.ShortReset` and
 `Format-OptionalDuration $usage.LongReset`.
 
-- [ ] **Step 3: Run focused tests and verify GREEN**
+- [x] **Step 3: Run focused tests and verify GREEN**
 
 Run the two commands from Task 1. Expected: both print their passed message and
 exit zero.
@@ -63,24 +63,24 @@ exit zero.
 - Modify: `README.md`
 - Modify: `docs/README-detailed.md`
 
-- [ ] **Step 1: Replace Codex `long`-only documentation with `5h / 7d` shared-limit behavior**
+- [x] **Step 1: Replace Codex `long`-only documentation with `5h / 7d` shared-limit behavior**
 
 State that Codex, Work, workspace agents, and the products named by ChatGPT
 share these plan limits while the gauge obtains the values from the existing
 official usage response.
 
-- [ ] **Step 2: Run complete verification**
+- [x] **Step 2: Run complete verification**
 
 Run all `tests/Test-*.ps1`, parse all PS1 files with PowerShell 7, verify BOMs,
 and run `git diff --check`. Expected: no failures.
 
-- [ ] **Step 3: Deploy and restart safely**
+- [x] **Step 3: Deploy and restart safely**
 
 Copy owned files to the installed directory. Stop only the single process whose
 Windows command line exactly executes the canonical installed
 `Start-AIUsageGauge.ps1`, then launch through the existing hidden VBS.
 
-- [ ] **Step 4: Verify the live result**
+- [x] **Step 4: Verify the live result**
 
 Use UI Automation to confirm Codex `5h` and `7d` values, Claude `5h`, `7d`, and
 `Fable`, one gauge process, a fresh heartbeat, and both services `ok`.
@@ -89,4 +89,3 @@ Use UI Automation to confirm Codex `5h` and `7d` values, Claude `5h`, `7d`, and
 
 Commit the focused change, push `main`, verify local and remote SHAs match, and
 append token-free evidence to `AI Usage Gauge Codex long表示調査`.
-

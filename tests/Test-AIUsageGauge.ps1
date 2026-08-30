@@ -238,15 +238,16 @@ foreach ($healthCategory in @('starting', 'ok', 'off', 'auth', 'rate_limited', '
 }
 $healthImplementationText = $healthStateAssignment.Extent.Text + $writeHealthText
 Assert-True ($healthImplementationText -notmatch '(?i)token|authorization|response|request.body|account|organi[sz]ation|prompt|Get-ChildItem') 'Health state and writer must not contain secrets, API payloads, identity data, prompts, or path scans'
-Assert-True ($start -notmatch '\$primaryRow\b') 'Codex short row must be removed'
-$codexLongRows = [regex]::Matches($start, '(?m)^\s*\$weeklyRow\s*=\s*New-Row\s+''long''\s+0\s+''Codex''\s*$')
-Assert-True ($codexLongRows.Count -eq 1) 'Exactly one Codex long row is required'
+Assert-True ($start -match '(?s)\$codex5hRow\s*=\s*New-Row\s+''5h''\s+0\s+''Codex''.*?\$codex7dRow\s*=\s*New-Row\s+''7d''\s+0\s+''Codex''') 'Codex rows must appear in 5h, 7d order'
+Assert-True ([regex]::Matches($start, '(?m)^\s*\$codex5hRow\s*=\s*New-Row\s+''5h''\s+0\s+''Codex''\s*$').Count -eq 1) 'Exactly one Codex 5h row is required'
+Assert-True ([regex]::Matches($start, '(?m)^\s*\$codex7dRow\s*=\s*New-Row\s+''7d''\s+0\s+''Codex''\s*$').Count -eq 1) 'Exactly one Codex 7d row is required'
+Assert-True ($start -match '\$window\.Height\s*=\s*146\b') 'The fixed gauge height must fit both Codex rows without clipping'
 Assert-True ($start -match '(?s)\$claude5hRow\s*=\s*New-Row\s+''5h''\s+0\s+''Claude''.*?\$claude7dRow\s*=\s*New-Row\s+''7d''\s+0\s+''Claude''.*?\$claudeFableRow\s*=\s*New-Row\s+''Fable''\s+0\s+''Claude''') 'Claude rows must appear in 5h, 7d, Fable order'
 $updateUsageDefinitionIndex = $start.IndexOf('function Update-Usage')
 Assert-True ($updateUsageDefinitionIndex -gt 0) 'Update-Usage definition must follow row creation'
 $rowInitializationText = $start.Substring(0, $updateUsageDefinitionIndex)
 $missingUnavailableInitializers = @(
-    foreach ($rowName in @('weeklyRow', 'claude5hRow', 'claude7dRow', 'claudeFableRow')) {
+    foreach ($rowName in @('codex5hRow', 'codex7dRow', 'claude5hRow', 'claude7dRow', 'claudeFableRow')) {
         $creationMatch = [regex]::Match($rowInitializationText, '(?m)^\s*\$' + $rowName + '\s*=\s*New-Row\b')
         $unavailableMatch = [regex]::Match($rowInitializationText, '(?m)^\s*Set-RowUnavailable\s+\$' + $rowName + '\s*$')
         if (-not $creationMatch.Success -or -not $unavailableMatch.Success -or $unavailableMatch.Index -le $creationMatch.Index) {

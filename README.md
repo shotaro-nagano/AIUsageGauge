@@ -10,7 +10,7 @@
 > - Claude OAuth トークンの自動更新を堅牢化（標準 Claude CLI に refresh を委譲 / hidden scheduled task でローカル期限を確認 / ログオン・スリープ復帰で自己修復 / 429 バックオフ + 状態の永続化）。再ログインの手間を最小化。
 > - Watchdog と診断コマンドを追加（既存の hidden refresh task から Gauge の生存確認 / Claude refresh task の修復 / トークン非表示の状態確認）。
 > - 低残量/認証異常通知、stale 表示、ドラッグ位置の永続化、外部 `settings.json`、インストール/ZIP作成スクリプトを追加。
-> - Graphite デザインへ刷新し、Codex は `long`、Claude は `5h` / `7d` / `Fable` を表示。
+> - Graphite デザインへ刷新し、Codex は共有プラン上限の `5h` / `7d`、Claude は `5h` / `7d` / `Fable` を表示。
 > - 30秒 heartbeat と確認付き自動復旧、接続中モニター内への自動復帰を追加。
 
 ---
@@ -20,7 +20,7 @@
 CodexPets の近くに表示する、Codex / Claude の残り使用量ゲージです。
 ※画像のPetsは付属していません
 
-Codex の `long` と、Claude の `5h` / `7d` / `Fable` の残り目安を表示します。
+Codex・Work・ワークスペースエージェントなどで共有されるプラン上限を、Codex欄の `5h` / `7d` として表示します。Claude は `5h` / `7d` / `Fable` の残り目安を表示します。
 起動すると CodexPets のそばに出現し、Pets の位置を追従します。
 Pets が非表示でもゲージ自体は機能します。
 
@@ -28,7 +28,7 @@ Pets が非表示でもゲージ自体は機能します。
 
 ## できること
 
-- Codex の `long` 残量を表示
+- Codex・Workなどで共有されるプラン上限の `5h` / `7d` 残量を表示
 - Claude の `5h` / `7d` / `Fable` 残量を表示
 - 落ち着いた Graphite 配色で状態を5段階表示
 - CodexPets の近くに自動配置

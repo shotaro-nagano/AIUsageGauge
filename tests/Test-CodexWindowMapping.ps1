@@ -209,15 +209,19 @@ if (-not $codexBlockMatch.Success) {
 }
 $codexUiBlock = $codexBlockMatch.Groups['Body'].Value
 
-foreach ($propertyName in @('LongRemaining', 'LongReset')) {
+foreach ($propertyName in @('ShortRemaining', 'ShortReset', 'LongRemaining', 'LongReset')) {
     Assert-Matches $codexUiBlock ('\$usage\.' + $propertyName + '\b') "Codex UI must consume $propertyName"
 }
 
 Assert-NotMatches $codexUiBlock '\$usage\.(PrimaryRemaining|WeeklyRemaining|PrimaryReset|WeeklyReset)\b' 'Codex UI must not reference legacy window properties'
-Assert-NotMatches $codexUiBlock '\$usage\.(ShortRemaining|ShortReset)\b|\$primaryRow\b' 'Codex UI must not consume or render the short window'
-Assert-NotMatches $codexUiBlock 'Notify-IfLowRemaining[^\r\n]*-Window\s+[''"]5h[''"]' 'Codex UI must not send a 5h notification'
-Assert-Matches $codexUiBlock '(?s)if\s*\(\s*\$null\s*-ne\s*\$usage\.LongRemaining\s*\)\s*\{\s*Set-Row\s+\$weeklyRow\s+\$usage\.LongRemaining.*?Notify-IfLowRemaining[^\r\n]*\$usage\.LongRemaining\s*\}\s*else\s*\{\s*Set-RowUnavailable\s+\$weeklyRow\s*\}' 'Long remaining notification must be guarded by availability'
-Assert-Matches $codexUiBlock '\$footer\.Text\s*=\s*\(''reset \{0\}''\s*-f\s*\(Format-OptionalDuration\s+\$usage\.LongReset\)\)' 'Codex footer must format only the long reset'
+foreach ($window in @(
+    [pscustomobject]@{ Property = 'ShortRemaining'; Row = 'codex5hRow'; Label = '5h' }
+    [pscustomobject]@{ Property = 'LongRemaining'; Row = 'codex7dRow'; Label = '7d' }
+)) {
+    $guardPattern = '(?s)if\s*\(\s*\$null\s*-ne\s*\$usage\.' + $window.Property + '\s*\)\s*\{\s*Set-Row\s+\$' + $window.Row + '\s+\$usage\.' + $window.Property + '.*?Notify-IfLowRemaining\s+-Service\s+[''"]Codex[''"]\s+-Window\s+[''"]' + $window.Label + '[''"]\s+-RemainingPercent\s+\$usage\.' + $window.Property + '\s*\}\s*else\s*\{\s*Set-RowUnavailable\s+\$' + $window.Row + '\s*\}'
+    Assert-Matches $codexUiBlock $guardPattern "Codex $($window.Label) rendering and notification must be guarded by availability"
+}
+Assert-Matches $codexUiBlock '(?s)\$footer\.Text\s*=\s*\(''reset \{0\} / \{1\}''\s*-f\s*\(Format-OptionalDuration\s+\$usage\.ShortReset\)\s*,\s*\(Format-OptionalDuration\s+\$usage\.LongReset\)\)' 'Codex footer must format both optional reset durations'
 
 $weeklyOnly = Convert-CodexRateLimitWindows -PrimaryWindow @{
     used_percent = 33

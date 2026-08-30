@@ -1046,7 +1046,7 @@ function Set-RowUnavailable($Row) {
 
 $window = New-Object System.Windows.Window
 $window.Width = 142
-$window.Height = 132
+$window.Height = 146
 $window.WindowStyle = 'None'
 $window.AllowsTransparency = $true
 $window.Background = 'Transparent'
@@ -1073,8 +1073,10 @@ $title.Margin = '0,0,0,2'
 $title.ToolTip = 'Left click and drag to move. Right click to close.'
 $stack.Children.Add($title) | Out-Null
 
-$weeklyRow = New-Row 'long' 0 'Codex'
-$stack.Children.Add($weeklyRow.Root) | Out-Null
+$codex5hRow = New-Row '5h' 0 'Codex'
+$codex7dRow = New-Row '7d' 0 'Codex'
+$stack.Children.Add($codex5hRow.Root) | Out-Null
+$stack.Children.Add($codex7dRow.Root) | Out-Null
 
 $footer = New-Object System.Windows.Controls.TextBlock
 $footer.Foreground = '#aeb7c4'
@@ -1105,7 +1107,8 @@ $stack.Children.Add($claude5hRow.Root) | Out-Null
 $stack.Children.Add($claude7dRow.Root) | Out-Null
 $stack.Children.Add($claudeFableRow.Root) | Out-Null
 
-Set-RowUnavailable $weeklyRow
+Set-RowUnavailable $codex5hRow
+Set-RowUnavailable $codex7dRow
 Set-RowUnavailable $claude5hRow
 Set-RowUnavailable $claude7dRow
 Set-RowUnavailable $claudeFableRow
@@ -1206,13 +1209,19 @@ function Update-Usage {
         } else {
             $usage = Get-CodexUsage
             $script:LastCodexUsage = $usage
-            if ($null -ne $usage.LongRemaining) {
-                Set-Row $weeklyRow $usage.LongRemaining
-                Notify-IfLowRemaining -Service 'Codex' -Window 'long' -RemainingPercent $usage.LongRemaining
+            if ($null -ne $usage.ShortRemaining) {
+                Set-Row $codex5hRow $usage.ShortRemaining
+                Notify-IfLowRemaining -Service 'Codex' -Window '5h' -RemainingPercent $usage.ShortRemaining
             } else {
-                Set-RowUnavailable $weeklyRow
+                Set-RowUnavailable $codex5hRow
             }
-            $footer.Text = ('reset {0}' -f (Format-OptionalDuration $usage.LongReset))
+            if ($null -ne $usage.LongRemaining) {
+                Set-Row $codex7dRow $usage.LongRemaining
+                Notify-IfLowRemaining -Service 'Codex' -Window '7d' -RemainingPercent $usage.LongRemaining
+            } else {
+                Set-RowUnavailable $codex7dRow
+            }
+            $footer.Text = ('reset {0} / {1}' -f (Format-OptionalDuration $usage.ShortReset), (Format-OptionalDuration $usage.LongReset))
             $footer.ToolTip = Get-LastHealthEventSummary
             if ($usage.LimitReached) {
                 $title.Text = 'Codex rate - capped'

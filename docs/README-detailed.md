@@ -15,16 +15,21 @@ AI Usage Gauge is a small always-on-top Windows overlay.
 It:
 
 - follows the Codex Desktop pet
-- shows the Codex `long` remaining quota
+- shows the shared Codex and Work `5h` and `7d` remaining quotas
 - shows Claude `5h`, `7d`, and `Fable` remaining quotas
 - updates usage periodically without increasing request frequency aggressively
 - can be moved manually by dragging
 - returns the full gauge to an active monitor after display changes
 - writes a token-free heartbeat every 30 seconds for confirmed automatic recovery
 
-The Codex gauge reads:
+The Codex gauge classifies the optional usage windows by duration instead of
+depending on their primary/secondary order:
 
-- `secondary_window.used_percent` as the longer-term usage
+- an 18,000-second window as `5h`
+- a 604,800-second window as `7d`
+
+ChatGPT presents these plan limits as shared by Codex, Work, workspace agents,
+and the other products listed on its usage page.
 
 The Claude gauge performs an OAuth-authenticated `GET https://api.anthropic.com/api/oauth/usage` and reads:
 
@@ -146,16 +151,19 @@ AI Usage Gauge は、Codex Desktop のペット横に表示する、Codex Deskto
 できること:
 
 - Codex Desktop のペットに追従する
-- Codex の `long` の残り目安を表示する
+- Codex・Workなどで共有されるプラン上限の `5h` / `7d` の残り目安を表示する
 - Claude の `5h` / `7d` / `Fable` の残り目安を表示する
 - 使用量は定期更新しつつ、APIアクセスは増やしすぎない
 - ドラッグで手動位置調整できる
 - Graphite 配色で落ち着いて表示する
 - モニター構成変更後も接続中の画面内へ自動復帰する
 
-Codex で取得している値:
+Codex欄は、API上のprimary/secondary順には依存せず、期間秒数で枠を分類します:
 
-- `secondary_window.used_percent`: 長期枠の使用済み%
+- 18,000秒の枠: `5h`
+- 604,800秒の枠: `7d`
+
+ChatGPTの使用状況画面では、これらはCodex・Work・ワークスペースエージェントなどで共有されるプラン上限として案内されています。
 
 Claude で取得している値:
 
