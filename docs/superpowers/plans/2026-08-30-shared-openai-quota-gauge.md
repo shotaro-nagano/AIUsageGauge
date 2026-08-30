@@ -85,7 +85,7 @@ Windows command line exactly executes the canonical installed
 Use UI Automation to confirm Codex `5h` and `7d` values, Claude `5h`, `7d`, and
 `Fable`, one gauge process, a fresh heartbeat, and both services `ok`.
 
-- [ ] **Step 5: Commit, push, and update the existing Notion log**
+- [x] **Step 5: Commit, push, and update the existing Notion log**
 
 Commit the focused change, push `main`, verify local and remote SHAs match, and
 append token-free evidence to `AI Usage Gauge Codex long表示調査`.
