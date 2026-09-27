@@ -17,7 +17,7 @@
 - Modify: `tests/Test-AIUsageGauge.ps1`
 - Modify: `Start-AIUsageGauge.ps1`
 
-- [ ] **Step 1: reset維持と更新警告の失敗テストを書く**
+- [x] **Step 1: reset維持と更新警告の失敗テストを書く**
 
 `tests/Test-ClaudeCredentialState.ps1`で、既存の`login renewal due`文字列確認を次へ置き換える。
 
@@ -34,7 +34,7 @@ Assert-True ($start -match '(?s)if\s*\(\$cl\.LoginRenewalDue\).*\$script:ClaudeN
 Assert-True ($start -match '(?s)\$cleanupTimer\.Add_Tick\(\{.*?\}\.GetNewClosure\(\)\)') 'Notification cleanup timer must capture its own timer instance'
 ```
 
-- [ ] **Step 2: REDを確認する**
+- [x] **Step 2: REDを確認する**
 
 ```powershell
 pwsh -NoProfile -File .\tests\Test-ClaudeCredentialState.ps1 -RepoRoot (Get-Location).Path
@@ -43,7 +43,7 @@ pwsh -NoProfile -File .\tests\Test-AIUsageGauge.ps1 -RepoRoot (Get-Location).Pat
 
 Expected: reset上書きと`.GetNewClosure()`未同期のため失敗する。
 
-- [ ] **Step 3: 最小実装を追加する**
+- [x] **Step 3: 最小実装を追加する**
 
 `Start-AIUsageGauge.ps1`の通知タイマーを、稼働中ファイルと同じclosure保持へ変更する。
 
@@ -67,7 +67,7 @@ if ($cl.LoginRenewalDue) {
 }
 ```
 
-- [ ] **Step 4: 対象テストをGREENにする**
+- [x] **Step 4: 対象テストをGREENにする**
 
 ```powershell
 pwsh -NoProfile -File .\tests\Test-ClaudeCredentialState.ps1 -RepoRoot (Get-Location).Path
@@ -76,7 +76,7 @@ pwsh -NoProfile -File .\tests\Test-AIUsageGauge.ps1 -RepoRoot (Get-Location).Pat
 
 Expected: `Claude credential state tests passed`と`AI Usage Gauge static tests passed`。
 
-- [ ] **Step 5: PowerShell構文とUTF-8 BOMを確認する**
+- [x] **Step 5: PowerShell構文とUTF-8 BOMを確認する**
 
 ```powershell
 $tokens = $null
@@ -95,7 +95,7 @@ if (-not ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -a
 
 Expected: 構文エラーなし、BOM確認成功。
 
-- [ ] **Step 6: コミットする**
+- [x] **Step 6: コミットする**
 
 ```powershell
 git add Start-AIUsageGauge.ps1 tests/Test-ClaudeCredentialState.ps1 tests/Test-AIUsageGauge.ps1
@@ -108,7 +108,7 @@ git commit -m "fix: keep Claude reset times visible"
 - Modify: `docs/superpowers/plans/2026-09-27-claude-reset-visibility.md`
 - Deploy: `C:\Users\syota\AI-Usage-Gauge\AI-Usage-Gauge-v0.1.0\Start-AIUsageGauge.ps1`
 
-- [ ] **Step 1: 全テストを実行する**
+- [x] **Step 1: 全テストを実行する**
 
 ```powershell
 $repoRoot = (Get-Location).Path
@@ -121,7 +121,7 @@ git diff --check
 
 Expected: Claude mapping、認証、Codex、ヘルス復旧、設定、画面位置を含む全テスト成功、差分形式エラーなし。
 
-- [ ] **Step 2: 正規のWPFゲージだけを停止する**
+- [x] **Step 2: 正規のWPFゲージだけを停止する**
 
 `Start-AIUsageGauge.ps1`の`Test-GaugeProcessCommandLine`と同じWindows引数解析を使い、次の正規パスが`-File`引数に指定されたプロセスだけを停止する。
 
@@ -131,7 +131,7 @@ C:\Users\syota\AI-Usage-Gauge\AI-Usage-Gauge-v0.1.0\Start-AIUsageGauge.ps1
 
 自分自身、他のPowerShell、Claude、Codex、tmux作業プロセスは停止しない。
 
-- [ ] **Step 3: 検証済みスクリプトを配置して再起動する**
+- [x] **Step 3: 検証済みスクリプトを配置して再起動する**
 
 ```powershell
 $source = Join-Path (Get-Location) 'Start-AIUsageGauge.ps1'
@@ -143,7 +143,7 @@ Start-Process -FilePath (Join-Path $env:WINDIR 'System32\wscript.exe') `
     -WindowStyle Hidden
 ```
 
-- [ ] **Step 4: 実機状態を確認する**
+- [x] **Step 4: 実機状態を確認する**
 
 トークンやコマンドライン本文を出力せず、次を確認する。
 
@@ -153,7 +153,7 @@ Start-Process -FilePath (Join-Path $env:WINDIR 'System32\wscript.exe') `
 - 配置先がUTF-8 BOMを保持。
 - 公式usage APIを追加で呼ばず、既存の3分更新でreset表示が更新される。
 
-- [ ] **Step 5: mainへ統合して再検証する**
+- [x] **Step 5: mainへ統合して再検証する**
 
 ```powershell
 git switch main
@@ -167,7 +167,7 @@ foreach ($test in Get-ChildItem -LiteralPath (Join-Path $repoRoot 'tests') -Filt
 
 Expected: fast-forward成功、全テスト成功。
 
-- [ ] **Step 6: GitHubとNotionを更新する**
+- [x] **Step 6: GitHubとNotionを更新する**
 
 ```powershell
 git push origin main
