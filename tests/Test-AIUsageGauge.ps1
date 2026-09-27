@@ -176,6 +176,7 @@ $stopVerifiedText = $stopVerifiedAst.Extent.Text
 
 Assert-True ($start -match 'Global\\AIUsageGauge') 'Start script must create a named mutex'
 Assert-True ($start -match '再ログイン要') 'Expired Claude auth must show a relogin-required label'
+Assert-True ($start -match '(?s)\$cleanupTimer\.Add_Tick\(\{.*?\}\.GetNewClosure\(\)\)') 'Notification cleanup timer must capture its own timer instance'
 Assert-True ($start -notmatch 'Invoke-RestMethod\s+-Uri\s+[''"]https://platform\.claude\.com/v1/oauth/token') 'Gauge must not directly call the Claude OAuth token endpoint'
 Assert-True ($start -match '\$ClaudeUsageUri\s*=\s*[''"]https://api\.anthropic\.com/api/oauth/usage[''"]') 'Claude usage must use the approved Anthropic host and path'
 Assert-True ($getClaudeUsageText -match 'Invoke-RestMethod\s+-Uri\s+\$ClaudeUsageUri\s+-Method\s+GET\b') 'Get-ClaudeUsage must use Invoke-RestMethod with GET'

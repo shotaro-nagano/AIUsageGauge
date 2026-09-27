@@ -363,7 +363,7 @@ function Show-AIUsageGaugeNotification {
                 $notifyIcon.Visible = $false
                 $notifyIcon.Dispose()
             } catch {}
-        })
+        }.GetNewClosure())
         $cleanupTimer.Start()
 
         Write-AIUsageGaugeEvent 'notification_shown' @{ key = $Key; title = $Title }
@@ -1277,7 +1277,7 @@ function Update-Usage {
             $script:ClaudeNeedsRelogin = $false
             Set-GaugeServiceHealth -Service claude -Status ok -SuccessAt ([DateTimeOffset]::UtcNow)
             if ($cl.LoginRenewalDue) {
-                $claudeFooter.Text = 'login renewal due'
+                $claudeTitle.Text = 'Claude rate · renew'
                 $script:ClaudeNeedsRelogin = $true
                 Show-AIUsageGaugeNotification -Key 'Claude-login-renewal' -Title 'AI Usage Gauge' -Message 'Claude login renewal is due.' -Icon 'Warning'
             }

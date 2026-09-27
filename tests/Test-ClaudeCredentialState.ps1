@@ -101,7 +101,10 @@ Assert-True ($helper -match 'ClaudeCredentialState\.ps1') 'Refresh helper must l
 Assert-True ($start -match 'AIUG_LOGIN_REQUIRED') 'Gauge must use a stable login-required error'
 Assert-True ($start -match "AIUG_TOKEN_EXPIRED\|AIUG_LOGIN_REQUIRED") 'UI must show relogin for both expired and missing credentials'
 Assert-True ($failureStatusFunction.Extent.Text -match 'AIUG_LOGIN_REQUIRED') 'Login-required health must be classified as auth'
-Assert-True ($start -match 'login renewal due') 'Gauge must warn before the refresh login expires'
+Assert-True ($start -match '\$claudeFooter\.Text\s*=\s*\(''reset \{0\} / \{1\}''') 'Claude footer must format both reset durations'
+Assert-True ($start -notmatch '\$claudeFooter\.Text\s*=\s*''login renewal due''') 'Login renewal warning must not replace Claude reset times'
+Assert-True ($start -match '\$claudeTitle\.Text\s*=\s*''Claude rate · renew''') 'Login renewal warning must move to the Claude title'
+Assert-True ($start -match '(?s)if\s*\(\$cl\.LoginRenewalDue\).*\$script:ClaudeNeedsRelogin\s*=\s*\$true.*Show-AIUsageGaugeNotification') 'Login renewal must preserve click-to-login state and notification'
 Assert-True ($helper -match "'refresh_login_required'") 'Refresh helper must log the token-free login-required state'
 $decisionIndex = $helper.IndexOf("'login_required'")
 $cliStartIndex = $helper.IndexOf('$claude = Get-ClaudeCliPath')
