@@ -123,15 +123,21 @@ function Get-CredentialExpiry {
 }
 
 function Get-ClaudeCliPath {
-    param([string]$Root)
+    param(
+        [string]$Root,
+        [string]$NativePath = (Join-Path $env:USERPROFILE '.local\bin\claude.exe')
+    )
 
-    if (!(Test-Path -LiteralPath $Root)) {
-        throw "claude_code_root_not_found"
+    $cli = if (Test-Path -LiteralPath $Root -PathType Container) {
+        Get-ChildItem -LiteralPath $Root -Recurse -Filter claude.exe -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
     }
 
-    $cli = Get-ChildItem -LiteralPath $Root -Recurse -Filter claude.exe -File -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -First 1
+    # Desktop updates can remove the bundled CLI; native installs use this fixed path.
+    if ($null -eq $cli -and (Test-Path -LiteralPath $NativePath -PathType Leaf)) {
+        return [System.IO.Path]::GetFullPath($NativePath)
+    }
 
     if ($null -eq $cli) {
         throw "claude_cli_not_found"

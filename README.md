@@ -192,3 +192,11 @@ APIやローカル状態ファイルの仕様が変わると、予告なく動�
 MIT License です。
 
 詳細は [LICENSE](./LICENSE) を確認してください。
+
+## Claude CLIの検出
+
+自動更新と再ログインは、従来のClaude Desktop配置内で最新の`claude.exe`を探します。
+そのフォルダーがない場合や空の場合は、ネイティブ版の配置先
+`%USERPROFILE%\.local\bin\claude.exe`を使用します。
+Desktopの更新などで同梱CLIがなくなっても、ネイティブ版があれば更新を継続できます。
+認証ファイルの広域検索は行いません。
