@@ -133,9 +133,11 @@ Claude Code の標準 CLI は、OAuth アクセストークンの有効期限が
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\Install-ClaudeOAuthRefreshTask.ps1
 ```
 
-登録されるタスクは、5分ごとにローカルの `expiresAt` だけを確認し、残り30秒以内または失効済みのときだけ Claude CLI を起動します。期限が十分残っている通常時は、OAuth エンドポイントも Claude CLI も呼びません。
+登録されるタスクは5分ごとにローカルの期限を確認します。通常のaccess token更新では、残り30秒以内または失効済みのときだけClaude CLIを起動します。長期ログインの期限が3日以内に近づいた場合は、下記の延長処理を別途試みます。どちらの期限にも余裕がある間は、OAuthエンドポイントもCLIも呼びません。
 
-access tokenとは別に、`/login`で作られたrefresh login自体にも期限があります。refresh tokenが有効な間は自動更新できますが、refresh loginまで期限切れになった後は、新しい認証情報を端末だけで生成することはできません。その場合はCLIの無効な再試行を止め、ゲージに `🔑 再ログイン要` を表示します。refresh loginの期限が3日以内に近づいた場合は、失効前に `login renewal due` と通知します。
+access tokenとは別に、`/login`で作られたrefresh login自体にも期限があります。期限の3日前から、公式CLIがサポートする `CLAUDE_CODE_OAUTH_REFRESH_TOKEN` と `CLAUDE_CODE_OAUTH_SCOPES` を一時的に子プロセスへ渡し、`claude auth login --claudeai` でブラウザーなしの延長を試みます。失敗時は24時間あけて再試行し、トークンは状態ファイルやイベントログに保存しません。期限切れやサーバー側での失効後は、この方法でも復旧できないため、ゲージに `🔑 再ログイン要` を表示します。認証プロバイダーが本人確認を要求する場合は、その承認を自動化できません。
+
+長期ログイン延長は公式CLIの公開手順に基づく予防策です。2026-10-29時点では実機の長期期限が約29日残っており、期限接近時の自動延長が成功するかは未検証です。完全な無操作維持を保証するものではありません。
 
 ログオン時とスリープ復帰時にも同じ helper を実行します。従来の復帰イベントに加え、Surface などの Modern Standby 復帰（`Microsoft-Windows-Kernel-Power` / Event ID `507`）にも対応し、PC 再起動や長時間スリープ後に直ちに自己復旧します。タスクは `wscript.exe` 経由で非表示実行されるため、通常の期限チェックでターミナルは開きません。
 

@@ -8,6 +8,7 @@
 $ErrorActionPreference = 'Stop'
 $EventLogDir = Join-Path $env:LOCALAPPDATA 'AIUsageGauge'
 $EventLogPath = Join-Path $EventLogDir 'events.log'
+$LoginRenewalStatePath = Join-Path $EventLogDir 'claude-login-renewal-state.json'
 $MaxEventLogBytes = 262144
 $HealthWatchdogPath = Join-Path $PSScriptRoot 'Watch-AIUsageGaugeHealth.ps1'
 $SettingsPath = Join-Path $PSScriptRoot 'settings.json'
@@ -187,6 +188,64 @@ try {
         Write-Status 'login_required'
         exit 0
     }
+
+    $renewalState = $null
+    try {
+        if (Test-Path -LiteralPath $LoginRenewalStatePath) {
+            $renewalState = Get-Content -LiteralPath $LoginRenewalStatePath -Raw | ConvertFrom-Json
+        }
+    } catch {}
+
+    if (Test-ClaudeLoginRenewalAttempt -CredentialDecision $credentialDecision -RenewalState $renewalState -Now $now) {
+        $oauth = $credentials.claudeAiOauth
+        $scopes = @($oauth.scopes | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+        if ([string]::IsNullOrWhiteSpace([string]$oauth.refreshToken) -or $scopes.Count -eq 0) {
+            Write-RefreshEvent 'login_renewal_missing_scopes'
+        } else {
+            # Persist the cooldown before invoking the CLI so crashes cannot create a retry loop.
+            New-Item -ItemType Directory -Force -Path $EventLogDir | Out-Null
+            [pscustomobject]@{
+                refreshExpiresAt = $credentialDecision.RefreshExpiresAt.ToString('o')
+                nextAttemptAt = $now.AddHours(24).ToString('o')
+            } | ConvertTo-Json -Compress | Set-Content -LiteralPath $LoginRenewalStatePath -Encoding UTF8
+
+            $claude = Get-ClaudeCliPath -Root $ClaudeCodeRoot
+            $priorRefresh = [Environment]::GetEnvironmentVariable('CLAUDE_CODE_OAUTH_REFRESH_TOKEN', 'Process')
+            $priorScopes = [Environment]::GetEnvironmentVariable('CLAUDE_CODE_OAUTH_SCOPES', 'Process')
+            $loginExit = -1
+            try {
+                [Environment]::SetEnvironmentVariable('CLAUDE_CODE_OAUTH_REFRESH_TOKEN', [string]$oauth.refreshToken, 'Process')
+                [Environment]::SetEnvironmentVariable('CLAUDE_CODE_OAUTH_SCOPES', ($scopes -join ' '), 'Process')
+                & $claude auth login --claudeai *> $null
+                $loginExit = $LASTEXITCODE
+            } catch {
+                $loginExit = -1
+            } finally {
+                [Environment]::SetEnvironmentVariable('CLAUDE_CODE_OAUTH_REFRESH_TOKEN', $priorRefresh, 'Process')
+                [Environment]::SetEnvironmentVariable('CLAUDE_CODE_OAUTH_SCOPES', $priorScopes, 'Process')
+            }
+
+            $credentials = Get-Content -Raw -LiteralPath $CredentialsPath | ConvertFrom-Json
+            $updatedDecision = Get-ClaudeCredentialRefreshDecision -Credentials $credentials -RefreshWindowSeconds $RefreshWindowSeconds
+            if ($loginExit -eq 0 -and $null -ne $updatedDecision.RefreshExpiresAt -and
+                $updatedDecision.RefreshExpiresAt -gt $credentialDecision.RefreshExpiresAt) {
+                Write-RefreshEvent 'login_renewal_success' @{ expiresAt = $updatedDecision.RefreshExpiresAt.ToString('o') }
+            } else {
+                Write-RefreshEvent 'login_renewal_failed' @{ exitCode = $loginExit }
+            }
+            $credentialDecision = $updatedDecision
+            if ($credentialDecision.Decision -eq 'login_required') {
+                Write-RefreshEvent 'refresh_login_required'
+                Write-Status 'login_required'
+                exit 0
+            }
+            if ($loginExit -ne 0 -and $credentialDecision.Decision -eq 'refresh') {
+                Write-Status 'login_renewal_failed'
+                exit 0
+            }
+        }
+    }
+
     if ($credentialDecision.Decision -eq 'fresh') {
         $remaining = ($credentialDecision.AccessExpiresAt - $now).TotalSeconds
         Write-RefreshEvent 'refresh_skipped_fresh' @{ expiresAt = $credentialDecision.AccessExpiresAt.ToString('o'); remainingSeconds = [int]$remaining }

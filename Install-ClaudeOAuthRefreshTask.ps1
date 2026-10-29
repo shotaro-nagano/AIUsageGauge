@@ -55,6 +55,7 @@ $task.Settings.WakeToRun = $true
 $task.Settings.DisallowStartIfOnBatteries = $false
 $task.Settings.StopIfGoingOnBatteries = $false
 $task.Settings.MultipleInstances = 2
+$task.Settings.ExecutionTimeLimit = 'PT3M'
 
 $timeTrigger = $task.Triggers.Create(1)
 $timeTrigger.Enabled = $true

@@ -66,3 +66,25 @@ function Get-ClaudeCredentialRefreshDecision {
         LoginRenewalDue = $loginRenewalDue
     }
 }
+
+function Test-ClaudeLoginRenewalAttempt {
+    param(
+        $CredentialDecision,
+        $RenewalState,
+        [DateTimeOffset]$Now = [DateTimeOffset]::UtcNow
+    )
+
+    if (-not $CredentialDecision.LoginRenewalDue -or $CredentialDecision.Decision -eq 'login_required') {
+        return $false
+    }
+    if ($null -eq $RenewalState -or
+        [string]$RenewalState.refreshExpiresAt -ne $CredentialDecision.RefreshExpiresAt.ToString('o')) {
+        return $true
+    }
+
+    try {
+        return [DateTimeOffset]::Parse([string]$RenewalState.nextAttemptAt) -le $Now
+    } catch {
+        return $true
+    }
+}

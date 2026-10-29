@@ -48,6 +48,15 @@ $renewalDue = Get-ClaudeCredentialRefreshDecision -Credentials ([pscustomobject]
 Assert-Equal 'fresh' $renewalDue.Decision 'An access token remains usable before login renewal'
 Assert-Equal $true $renewalDue.LoginRenewalDue 'A refresh login inside three days must warn early'
 
+Assert-Equal $true (Test-ClaudeLoginRenewalAttempt -CredentialDecision $renewalDue -RenewalState $null -Now $now) 'Due login should be attempted once'
+$renewalState = [pscustomobject]@{
+    refreshExpiresAt = $renewalDue.RefreshExpiresAt.ToString('o')
+    nextAttemptAt = $now.AddHours(24).ToString('o')
+}
+Assert-Equal $false (Test-ClaudeLoginRenewalAttempt -CredentialDecision $renewalDue -RenewalState $renewalState -Now $now) 'Failed attempt must back off'
+Assert-Equal $true (Test-ClaudeLoginRenewalAttempt -CredentialDecision $renewalDue -RenewalState $renewalState -Now $now.AddHours(24)) 'Attempt resumes after cooldown'
+Assert-Equal $false (Test-ClaudeLoginRenewalAttempt -CredentialDecision $fresh -RenewalState $renewalState -Now $now) 'Fresh long-term login must not reauthenticate'
+
 $refreshable = Get-ClaudeCredentialRefreshDecision -Credentials ([pscustomobject]@{
     claudeAiOauth = [pscustomobject]@{
         accessToken = ''
@@ -106,6 +115,7 @@ Assert-True ($start -notmatch '\$claudeFooter\.Text\s*=\s*''login renewal due'''
 Assert-True ($start -match '\$claudeTitle\.Text\s*=\s*''Claude rate · renew''') 'Login renewal warning must move to the Claude title'
 Assert-True ($start -match '(?s)if\s*\(\$cl\.LoginRenewalDue\).*\$script:ClaudeNeedsRelogin\s*=\s*\$true.*Show-AIUsageGaugeNotification') 'Login renewal must preserve click-to-login state and notification'
 Assert-True ($helper -match "'refresh_login_required'") 'Refresh helper must log the token-free login-required state'
+Assert-True ($helper -match 'CLAUDE_CODE_OAUTH_REFRESH_TOKEN' -and $helper -match 'CLAUDE_CODE_OAUTH_SCOPES') 'Renewal must use the official CLI headless login flow'
 $decisionIndex = $helper.IndexOf("'login_required'")
 $cliStartIndex = $helper.IndexOf('$claude = Get-ClaudeCliPath')
 Assert-True ($decisionIndex -ge 0 -and $decisionIndex -lt $cliStartIndex) 'Login-required credentials must be handled before CLI launch'
